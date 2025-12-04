@@ -2,8 +2,6 @@
 # This file defines the Block class used in our blockchain.
 # Each block stores one transaction plus the proof of work fields.
 
-
-# A transaction is just a tuple like ("P1", "P2", 10).
 class Block:
     def __init__(self, depth, tx, nonce, prev_hash, hash_value):
         self.depth = depth
@@ -25,12 +23,12 @@ class Block:
             "hash": self.hash,
         }
 
-    # note: no self here, called as Block.from_dict(d)
+    @staticmethod
     def from_dict(d):
         """
         Build a Block object back from the dict we stored in JSON.
         """
-        depth = d["depth"]
+        depth = int(d["depth"])
         sender, receiver, amount = d["tx"]
         tx = (sender, receiver, amount)
         nonce = d["nonce"]
