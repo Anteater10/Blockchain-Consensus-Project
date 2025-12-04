@@ -1,22 +1,37 @@
 # src/node.py
-# This file starts a single node in the system. For now it just loads config,
-# sets up local blockchain + accounts, and runs a small local test.
+# This file starts a single node in the system. It loads config,
+# sets up local blockchain + accounts, and (for Milestone 2) runs
+# a networked Paxos dummy test.
 #
 # Milestone 1:
 #   - local blockchain + accounts
 #   - Paxos state + instance skeleton
 #   - stubbed network hooks for Paxos (no real networking yet)
+#
+# Milestone 2:
+#   - Person A: load/save blockchain + balances
+#   - Person B: networking skeleton + dummy Paxos over the network
 
 import argparse
 import json
 import sys
+import asyncio
 from pathlib import Path
 
-from blockchain.chain import Blockchain
-from accounts.accounts import AccountsTable
-from paxos.state import PaxosNodeState
-from paxos.instance import PaxosInstance
-from paxos.messages import PaxosMessage
+from .blockchain.chain import Blockchain
+from .accounts.accounts import AccountsTable
+from .paxos.state import PaxosNodeState
+from .paxos.instance import PaxosInstance
+from .paxos.messages import PaxosMessage
+from .storage.storage import (
+    save_blockchain,
+    load_blockchain,
+    save_balances,
+    load_balances,
+)
+
+from .network.server import start_server
+from .network.client import NetworkClient
 
 
 class NodeConfig:
@@ -35,36 +50,49 @@ class Node:
         # make sure data directory exists
         self.config.data_dir.mkdir(parents=True, exist_ok=True)
 
-        # paths for future persistence (used in later milestones)
+        # paths for persistence
         self.blockchain_path = self.config.data_dir / "blockchain.json"
         self.balances_path = self.config.data_dir / "balances.json"
 
-        # create empty files for now (we will fill them in Milestone 2)
-        if not self.blockchain_path.exists():
-            self.blockchain_path.write_text("[]", encoding="utf-8")
-
-        if not self.balances_path.exists():
-            self.balances_path.write_text("{}", encoding="utf-8")
-
-        # local in-memory state (Milestone 1)
-        self.blockchain = Blockchain()
-        self.accounts = AccountsTable.fresh()
+        # load existing state if present, otherwise start fresh
+        self.blockchain: Blockchain = load_blockchain(self.blockchain_path)
+        self.accounts: AccountsTable = load_balances(self.balances_path)
 
         # Paxos node-wide state (BallotNum / AcceptNum / AcceptVal per depth)
         self.paxos_state = PaxosNodeState(self.config.id)
         # depth -> PaxosInstance
-        self.paxos_instances = {}
+        self.paxos_instances: dict[int, PaxosInstance] = {}
+
+        # Networking: server + outgoing client
+        self.server: asyncio.AbstractServer | None = None
+        self.net_client: NetworkClient | None = None
 
     # -------------------------------------------------------------------------
-    # Paxos integration stubs (Milestone 1)
+    # Helper: build peer map for NetworkClient
+    # -------------------------------------------------------------------------
+
+    def _build_peer_map(self) -> dict[int, tuple[str, int]]:
+        """
+        Build a mapping { node_id -> (host, port) } including self and peers.
+
+        Used by NetworkClient so it knows how to connect to everyone.
+        """
+        peers: dict[int, tuple[str, int]] = {}
+        peers[self.config.id] = (self.config.host, self.config.port)
+        for p in self.peers:
+            peers[p.id] = (p.host, p.port)
+        return peers
+
+    # -------------------------------------------------------------------------
+    # Paxos integration (now with real networking hooks)
     # -------------------------------------------------------------------------
 
     def _get_paxos_instance(self, depth):
         """
         Return the PaxosInstance for a given depth, creating it if needed.
 
-        send_func / broadcast_func are currently stubbed to just print;
-        real networking will be plugged in during Milestone 2.
+        send_func / broadcast_func now call into the NetworkClient so that
+        Paxos messages are actually sent over TCP.
         """
         if depth not in self.paxos_instances:
             peer_ids = [p.id for p in self.peers]
@@ -81,10 +109,10 @@ class Node:
 
     def start_paxos(self, depth, value):
         """
-        Milestone 1 stub entry point for proposing a value at a given depth.
+        Entry point for proposing a value at a given depth.
 
-        Later milestones will call this from CLI (e.g., moneyTransfer) with a
-        Block as 'value'. For now it just prints and does nothing else.
+        For Milestone 2, this will be used to propose a dummy value ("X")
+        at depth 0 from one node (e.g., node 1) to show networked agreement.
         """
         inst = self._get_paxos_instance(depth)
         inst.start_proposal(value)
@@ -93,40 +121,47 @@ class Node:
         """
         Callback invoked by PaxosInstance when a DECIDE is delivered.
 
-        Milestone 1: only logs. Milestone 3: will treat 'value' as a Block
-        and call apply_decided_block on the blockchain layer.
+        In Milestone 3, 'value' will be treated as a Block and we will call
+        apply_decided_block on the blockchain + accounts + persistence layer.
+        For Milestone 2, just log the decision.
         """
         print(
             f"[NODE {self.config.id}] DECIDED depth={depth}, value={value!r}",
             flush=True,
         )
 
-    def _send_paxos_to_peer(self, peer_id, msg):
+    def _send_paxos_to_peer(self, peer_id, msg: PaxosMessage):
         """
-        Stub send function passed into PaxosInstance.
+        Send a PaxosMessage to a single peer over the network.
 
-        'msg' is a PaxosMessage. For Milestone 1, we just print the dict
-        form instead of doing real networking.
+        This is the send_func passed into PaxosInstance. It wraps the
+        async NetworkClient.send_to_peer in an asyncio task so that
+        PaxosInstance can remain synchronous.
         """
         if not isinstance(msg, PaxosMessage):
-            # guard against misuse later
             print(
                 f"[NODE {self.config.id}] _send_paxos_to_peer got non-PaxosMessage: {msg}",
                 flush=True,
             )
             return
 
-        print(
-            f"[NODE {self.config.id}] send_to_peer({peer_id}, {msg.to_dict()}) [stub]",
-            flush=True,
-        )
+        if self.net_client is None:
+            print(
+                f"[NODE {self.config.id}] net_client not ready; dropping send_to_peer({peer_id}, {msg.to_dict()})",
+                flush=True,
+            )
+            return
 
-    def _broadcast_paxos(self, msg):
+        async def _run():
+            await self.net_client.send_to_peer(peer_id, msg.to_dict())
+
+        asyncio.create_task(_run())
+
+    def _broadcast_paxos(self, msg: PaxosMessage):
         """
-        Stub broadcast function passed into PaxosInstance.
+        Broadcast a PaxosMessage to all peers over the network.
 
-        'msg' is a PaxosMessage. In Milestone 2, this will call the NetworkClient
-        to actually send to all peers.
+        This is the broadcast_func passed into PaxosInstance.
         """
         if not isinstance(msg, PaxosMessage):
             print(
@@ -135,25 +170,29 @@ class Node:
             )
             return
 
-        print(
-            f"[NODE {self.config.id}] broadcast({msg.to_dict()}) [stub]",
-            flush=True,
-        )
+        if self.net_client is None:
+            print(
+                f"[NODE {self.config.id}] net_client not ready; dropping broadcast({msg.to_dict()})",
+                flush=True,
+            )
+            return
+
+        async def _run():
+            await self.net_client.broadcast(msg.to_dict())
+
+        asyncio.create_task(_run())
 
     async def handle_incoming_paxos_dict(self, d):
         """
-        Future hook for the network server: given an incoming JSON dict,
+        Network server hook: given an incoming JSON dict,
         decode into a PaxosMessage and route it to the correct PaxosInstance.
-
-        This is not used in Milestone 1 yet, but it's ready for when you wire
-        up network.server.start_server in Milestone 2.
         """
         msg = PaxosMessage.from_dict(d)
         inst = self._get_paxos_instance(msg.depth)
         inst.handle_message(msg)
 
     # -------------------------------------------------------------------------
-    # Existing Milestone 1 local test
+    # Printing + local test (Person A: state + storage)
     # -------------------------------------------------------------------------
 
     def print_summary(self):
@@ -165,13 +204,42 @@ class Node:
         print(f"  Peers       : {[p.id for p in self.peers]}")
         print("============================")
 
+    def print_blockchain(self):
+        """
+        Print all blocks in the blockchain in a readable way.
+        """
+        print("\n=== Blockchain ===")
+        if len(self.blockchain.blocks) == 0:
+            print("(empty)")
+            return
+
+        for b in self.blockchain.blocks:
+            sender, receiver, amount = b.tx
+            print(f"- depth   : {b.depth}")
+            print(f"  tx      : {sender} -> {receiver}, amount={amount}")
+            print(f"  nonce   : {b.nonce}")
+            print(f"  hash    : {b.hash}")
+            print(f"  prev    : {b.prev_hash}")
+            print("")
+
+    def print_balances(self):
+        """
+        Print account balances.
+        """
+        print("\n=== Balances ===")
+        for cid, bal in self.accounts.balances.items():
+            print(f"  {cid}: {bal}")
+
     def run_local_test(self):
         """
-        Simple Milestone 1 test:
+        Simple Milestone 1+2 test:
         - create a tx (P1 -> P2, 10)
         - build + append a block
         - apply tx to accounts
+        - save to disk
         - print results
+
+        This is local-only and does not involve Paxos/networking.
         """
         print("\n[Local Test] Creating a block locally...\n")
 
@@ -188,6 +256,10 @@ class Node:
         # apply transaction to account balances
         self.accounts.apply_transaction(tx)
 
+        # save new state to disk
+        save_blockchain(self.blockchain, self.blockchain_path)
+        save_balances(self.accounts, self.balances_path)
+
         # show block info
         print(f"New block at depth {block.depth}")
         print(f"  tx     : {block.tx}")
@@ -199,6 +271,46 @@ class Node:
         print("\nUpdated balances:")
         for cid, bal in self.accounts.balances.items():
             print(f"  {cid}: {bal}")
+
+    # -------------------------------------------------------------------------
+    # Milestone 2: async networking entrypoint (Person B)
+    # -------------------------------------------------------------------------
+
+    async def run_network(self):
+        """
+        Milestone 2 network runner:
+
+        - Start the asyncio server to receive Paxos messages
+        - Connect to peers using NetworkClient
+        - If this is node 1, start a dummy Paxos proposal at depth 0 with value "X"
+        - Then keep the event loop alive
+        """
+        # 1) Start server for incoming Paxos messages
+        self.server = await start_server(
+            self.config.host,
+            self.config.port,
+            self.handle_incoming_paxos_dict,
+        )
+
+        # 2) Set up NetworkClient and connect to peers
+        peer_map = self._build_peer_map()
+        self.net_client = NetworkClient(self.config.id, peer_map)
+        await self.net_client.connect_peers()
+
+        print(f"[NODE {self.config.id}] Network initialized", flush=True)
+
+        # 3) Dummy Paxos: have node 1 propose "X" at depth 0
+        if self.config.id == 1:
+            # small delay to give others time to start listening
+            await asyncio.sleep(1.0)
+            print(
+                f"[NODE {self.config.id}] Starting dummy Paxos for depth 0 with value 'X'",
+                flush=True,
+            )
+            self.start_paxos(depth=0, value="X")
+
+        # 4) Keep running forever
+        await asyncio.Event().wait()
 
 
 def load_config(config_path, my_id):
@@ -259,13 +371,13 @@ def main():
     node = Node(me, peers)
     node.print_summary()
 
-    # Milestone 1 test call
-    node.run_local_test()
+    # For Milestone 2, we run the async networking skeleton instead of
+    # the local-only blockchain test.
+    asyncio.run(node.run_network())
 
-    # Later milestones will:
-    #   - start asyncio server
-    #   - connect peers
-    #   - run event loop forever
+    # If you still want to sanity-check storage locally, you can
+    # temporarily call:
+    #   node.run_local_test()
 
 
 if __name__ == "__main__":

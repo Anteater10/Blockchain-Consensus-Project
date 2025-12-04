@@ -55,19 +55,44 @@ class PaxosInstance:
         """
         Entry point when this node wants to propose a value as leader.
 
-        Milestone 1: only store the value and print a stub message.
-        Later: we will pick a ballot and send PREPARE messages here,
-        matching “Phase 1a: Prepare” where the leader starts a ballot
-        and contacts a majority of acceptors.
+        Milestone 2 (dummy Paxos):
+          - choose a fresh ballot for this depth via PaxosNodeState
+          - immediately broadcast DECIDE(value) to all peers
+          - apply the decision locally
+
+        Later milestones will replace this with the real Phase 1 (PREPARE/PROMISE)
+        and Phase 2 (ACCEPT/ACCEPTED) logic.
         """
         if self.is_decided:
             print(f"[PAXOS depth={self.depth}] already decided, ignoring new proposal")
             return
 
+        # Store the value and pick a new unique ballot for this depth.
         self.proposal_value = value
-        # In a later milestone, we'll generate a ballot and send PREPARE
-        # to all acceptors (the “leader based” structure shown in the Paxos overview).
-        print(f"[PAXOS depth={self.depth}] start_proposal(value={value!r}) [stub]")
+        self.proposal_ballot = self.node_state.new_ballot(self.depth)
+
+        # Construct a DECIDE message as if we were a proper leader who already
+        # went through prepare/accept phases. For Milestone 2 we skip straight
+        # to the decision broadcast.
+        decide_msg = PaxosMessage(
+            msg_type=PaxosMessageType.DECIDE,
+            from_id=self.node_state.node_id,
+            ballot=self.proposal_ballot,
+            depth=self.depth,
+            value=value,
+        )
+
+        print(
+            f"[PAXOS depth={self.depth}] Dummy start_proposal: "
+            f"broadcasting DECIDE value={value!r}, ballot={self.proposal_ballot}",
+            flush=True,
+        )
+
+        # Send DECIDE to all peers over the network
+        self.broadcast_func(decide_msg)
+
+        # And apply it locally so the leader also decides.
+        self._on_decide(decide_msg)
 
     def handle_message(self, msg: PaxosMessage):
         """
@@ -92,7 +117,7 @@ class PaxosInstance:
         else:
             print(f"[PAXOS depth={self.depth}] unknown message type: {msg.type}")
 
-    # The following handlers are all stubs for Milestone 1.
+    # The following handlers are all stubs for Milestone 1/2.
     # The real logic will mirror the pseudo-code for the proposer/acceptor
     # from the Paxos algorithm slides (BallotNum, AcceptNum, AcceptVal updates).
 
