@@ -29,9 +29,10 @@ from .storage.storage import (
     save_balances,
     load_balances,
 )
-
+from .blockchain.block import Block
 from .network.server import start_server
 from .network.client import NetworkClient
+from .cli.commands import run_cli
 
 
 class NodeConfig:
@@ -111,24 +112,82 @@ class Node:
         """
         Entry point for proposing a value at a given depth.
 
-        For Milestone 2, this will be used to propose a dummy value ("X")
-        at depth 0 from one node (e.g., node 1) to show networked agreement.
+        For Milestone 3, 'value' is typically a Block (or Block dict)
+        representing a transaction to be appended at this depth.
         """
         inst = self._get_paxos_instance(depth)
         inst.start_proposal(value)
+
 
     def _on_paxos_decide(self, depth, value):
         """
         Callback invoked by PaxosInstance when a DECIDE is delivered.
 
-        In Milestone 3, 'value' will be treated as a Block and we will call
-        apply_decided_block on the blockchain + accounts + persistence layer.
-        For Milestone 2, just log the decision.
+        For Milestone 3, 'value' is the decided Block (usually serialized
+        as a dict over the network). Here we:
+          - reconstruct the Block
+          - append it to the local chain
+          - apply the transaction to accounts
+          - persist blockchain + balances to disk
         """
         print(
             f"[NODE {self.config.id}] DECIDED depth={depth}, value={value!r}",
             flush=True,
         )
+
+        # 1) Rebuild Block from value
+        if isinstance(value, dict):
+            try:
+                block = Block.from_dict(value)
+            except Exception as e:
+                print(
+                    f"[NODE {self.config.id}] ERROR reconstructing Block from value: {e}",
+                    flush=True,
+                )
+                return
+        elif isinstance(value, Block):
+            block = value
+        else:
+            print(
+                f"[NODE {self.config.id}] Unexpected decided value type: {type(value)}",
+                flush=True,
+            )
+            return
+
+        # Optional sanity check: depth agreement
+        if block.depth != depth:
+            print(
+                f"[NODE {self.config.id}] WARNING: decided depth mismatch: "
+                f"block.depth={block.depth}, slot={depth}",
+                flush=True,
+            )
+
+        # 2) Append block to blockchain (this enforces depth/prev_hash checks)
+        try:
+            self.blockchain.append_block(block)
+        except ValueError as e:
+            # This can happen if we've already appended this block or chain diverged.
+            print(
+                f"[NODE {self.config.id}] ERROR appending decided block at depth={depth}: {e}",
+                flush=True,
+            )
+            return
+
+        # 3) Apply the transaction to account balances
+        sender, receiver, amount = block.tx
+        # At this point, we assume tx was valid when it was proposed.
+        self.accounts.apply_transaction(block.tx)
+
+        # 4) Persist new state to disk
+        save_blockchain(self.blockchain, self.blockchain_path)
+        save_balances(self.accounts, self.balances_path)
+
+        print(
+            f"[NODE {self.config.id}] Applied decided block at depth={block.depth}: "
+            f"{sender} -> {receiver}, amount={amount}",
+            flush=True,
+        )
+
 
     def _send_paxos_to_peer(self, peer_id, msg: PaxosMessage):
         """
@@ -190,6 +249,44 @@ class Node:
         msg = PaxosMessage.from_dict(d)
         inst = self._get_paxos_instance(msg.depth)
         inst.handle_message(msg)
+    
+    # -------------------------------------------------------------------------
+    # Application-level entrypoint: money transfer → Paxos proposal
+    # -------------------------------------------------------------------------
+
+    def handle_money_transfer(self, debit_id: str, credit_id: str, amount: int):
+        """
+        Handle a user-initiated money transfer.
+
+        - debit_id, credit_id are account ids like "P1", "P2"
+        - amount is an integer
+
+        This builds a candidate Block and starts Paxos at the next depth.
+        """
+        # 1) Check that the debit account can pay
+        if not self.accounts.can_debit(debit_id, amount):
+            print(
+                f"[NODE {self.config.id}] Insufficient funds in {debit_id} "
+                f"for amount={amount}",
+                flush=True,
+            )
+            return
+
+        tx = (debit_id, credit_id, amount)
+        depth = self.blockchain.length()
+
+        # 2) Build candidate block using local blockchain logic (includes PoW)
+        block = self.blockchain.new_block_for_tx(tx)
+
+        print(
+            f"[NODE {self.config.id}] Proposing tx={tx} at depth={depth}",
+            flush=True,
+        )
+
+        # 3) For Paxos, send a JSON-friendly representation
+        #    so PaxosMessage.to_dict() / from_dict() can serialize it.
+        self.start_paxos(depth=depth, value=block.to_dict())
+
 
     # -------------------------------------------------------------------------
     # Printing + local test (Person A: state + storage)
@@ -278,11 +375,11 @@ class Node:
 
     async def run_network(self):
         """
-        Milestone 2 network runner:
+        Network runner:
 
         - Start the asyncio server to receive Paxos messages
         - Connect to peers using NetworkClient
-        - If this is node 1, start a dummy Paxos proposal at depth 0 with value "X"
+        - Start CLI loop (reads commands from stdin)
         - Then keep the event loop alive
         """
         # 1) Start server for incoming Paxos messages
@@ -299,18 +396,13 @@ class Node:
 
         print(f"[NODE {self.config.id}] Network initialized", flush=True)
 
-        # 3) Dummy Paxos: have node 1 propose "X" at depth 0
-        if self.config.id == 1:
-            # small delay to give others time to start listening
-            await asyncio.sleep(1.0)
-            print(
-                f"[NODE {self.config.id}] Starting dummy Paxos for depth 0 with value 'X'",
-                flush=True,
-            )
-            self.start_paxos(depth=0, value="X")
+        # 3) Start CLI loop in background
+        asyncio.create_task(run_cli(self))
 
         # 4) Keep running forever
         await asyncio.Event().wait()
+
+
 
 
 def load_config(config_path, my_id):
