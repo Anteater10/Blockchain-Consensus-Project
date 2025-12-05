@@ -71,21 +71,32 @@ class NetworkClient:
                 )
 
     async def send_to_peer(self, peer_id: int, msg: Dict[str, Any]) -> None:
-        """
-        Send a JSON-serializable dict to a single peer.
-
-        In later milestones, 'msg' will usually be PaxosMessage.to_dict().
-
-        Milestone 2: every send uses send_json_with_delay, which applies
-        NETWORK_DELAY before actually writing.
-        """
         writer = self._peer_writers.get(peer_id)
+
+        # If we don't have a writer yet, try to connect lazily.
         if writer is None:
-            print(
-                f"[NET {self.node_id}] No connection to peer {peer_id}; dropping message: {msg}",
-                flush=True,
-            )
-            return
+            peer_info = self.peers.get(peer_id)
+            if peer_info is None:
+                print(
+                    f"[NET {self.node_id}] Unknown peer {peer_id}; dropping message: {msg}",
+                    flush=True,
+                )
+                return
+
+            host, port = peer_info
+            try:
+                reader, writer = await asyncio.open_connection(host, port)
+                self._peer_writers[peer_id] = writer
+                print(
+                    f"[NET {self.node_id}] Lazily connected to peer {peer_id} at {host}:{port}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(
+                    f"[NET {self.node_id}] Failed lazy connect to peer {peer_id} at {host}:{port}: {e}",
+                    flush=True,
+                )
+                return
 
         try:
             await send_json_with_delay(writer, msg)
@@ -95,18 +106,15 @@ class NetworkClient:
                 flush=True,
             )
 
+
     async def broadcast(self, msg: Dict[str, Any]) -> None:
         """
-        Send the same message to all connected peers.
+        Send the same message to all peers (except self).
 
-        Milestone 2: also uses send_json_with_delay so that every outbound
-        message respects NETWORK_DELAY.
+        Uses send_to_peer so that missing connections get created lazily.
         """
-        for pid, writer in list(self._peer_writers.items()):
-            try:
-                await send_json_with_delay(writer, msg)
-            except Exception as e:
-                print(
-                    f"[NET {self.node_id}] Error broadcasting to peer {pid}: {e}",
-                    flush=True,
-                )
+        for pid in self.peers.keys():
+            if pid == self.node_id:
+                continue
+            await self.send_to_peer(pid, msg)
+

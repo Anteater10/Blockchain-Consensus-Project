@@ -13,7 +13,7 @@ from typing import Any, Dict
 
 # Used in later milestones to simulate network latency.
 # For Milestone 1 it's fine if nobody actually sleeps on this.
-NETWORK_DELAY: float = 3.0
+NETWORK_DELAY: float = 0.1
 
 
 async def send_json(writer: asyncio.StreamWriter, obj: Dict[str, Any]) -> None:
