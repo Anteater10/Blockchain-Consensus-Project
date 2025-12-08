@@ -11,6 +11,10 @@
 # Milestone 2:
 #   - Person A: load/save blockchain + balances
 #   - Person B: networking skeleton + dummy Paxos over the network
+#
+# Later milestones:
+#   - Paxos driving real blocks for moneyTransfer commands
+#   - crash / restart using data on disk
 
 import argparse
 import json
@@ -28,6 +32,8 @@ from .storage.storage import (
     load_blockchain,
     save_balances,
     load_balances,
+    log_write_tentative,
+    log_mark_decided,
 )
 from .blockchain.block import Block
 from .network.server import start_server
@@ -54,6 +60,8 @@ class Node:
         # paths for persistence
         self.blockchain_path = self.config.data_dir / "blockchain.json"
         self.balances_path = self.config.data_dir / "balances.json"
+        # log for tentative vs decided blocks (Option 2)
+        self.log_path = self.config.data_dir / "ledger_log.json"
 
         # load existing state if present, otherwise start fresh
         self.blockchain: Blockchain = load_blockchain(self.blockchain_path)
@@ -104,6 +112,7 @@ class Node:
                 send_func=self._send_paxos_to_peer,
                 broadcast_func=self._broadcast_paxos,
                 on_decide=self._on_paxos_decide,
+                on_tentative=self._on_paxos_tentative,
             )
             self.paxos_instances[depth] = inst
         return self.paxos_instances[depth]
@@ -118,6 +127,52 @@ class Node:
         inst = self._get_paxos_instance(depth)
         inst.start_proposal(value)
 
+    # -------------------------------------------------------------------------
+    # Paxos callbacks: tentative + decided
+    # -------------------------------------------------------------------------
+
+    def _on_paxos_tentative(self, depth, value):
+        """
+        Called when *this* node accepts a value for a given depth
+        (before DECIDE).
+
+        We:
+          - reconstruct the Block
+          - write/update a tentative entry in ledger_log.json
+
+        This implements the "tentative on disk" part of the spec (Option 2).
+        """
+        # Rebuild Block from value
+        if isinstance(value, dict):
+            try:
+                block = Block.from_dict(value)
+            except Exception as e:
+                print(
+                    f"[NODE {self.config.id}] ERROR reconstructing tentative Block from value: {e}",
+                    flush=True,
+                )
+                return
+        elif isinstance(value, Block):
+            block = value
+        else:
+            print(
+                f"[NODE {self.config.id}] Unexpected tentative value type: {type(value)}",
+                flush=True,
+            )
+            return
+
+        # Write / update tentative entry in the log
+        try:
+            log_write_tentative(depth, block.to_dict(), self.log_path)
+            print(
+                f"[NODE {self.config.id}] Logged tentative block at depth={depth}",
+                flush=True,
+            )
+        except Exception as e:
+            print(
+                f"[NODE {self.config.id}] ERROR writing tentative log at depth={depth}: {e}",
+                flush=True,
+            )
 
     def _on_paxos_decide(self, depth, value):
         """
@@ -128,6 +183,7 @@ class Node:
           - reconstruct the Block
           - append it to the local chain
           - apply the transaction to accounts
+          - mark the log entry as decided
           - persist blockchain + balances to disk
         """
         print(
@@ -178,7 +234,20 @@ class Node:
         # At this point, we assume tx was valid when it was proposed.
         self.accounts.apply_transaction(block.tx)
 
-        # 4) Persist new state to disk
+        # 4) Mark decided in the log (Option 2: tentative -> decided)
+        try:
+            log_mark_decided(depth, self.log_path)
+            print(
+                f"[NODE {self.config.id}] Marked block at depth={depth} as DECIDED in log",
+                flush=True,
+            )
+        except Exception as e:
+            print(
+                f"[NODE {self.config.id}] ERROR marking decided in log at depth={depth}: {e}",
+                flush=True,
+            )
+
+        # 5) Persist new state to disk
         save_blockchain(self.blockchain, self.blockchain_path)
         save_balances(self.accounts, self.balances_path)
 
@@ -188,6 +257,9 @@ class Node:
             flush=True,
         )
 
+    # -------------------------------------------------------------------------
+    # Network send helpers for Paxos
+    # -------------------------------------------------------------------------
 
     def _send_paxos_to_peer(self, peer_id, msg: PaxosMessage):
         """
@@ -249,7 +321,7 @@ class Node:
         msg = PaxosMessage.from_dict(d)
         inst = self._get_paxos_instance(msg.depth)
         inst.handle_message(msg)
-    
+
     # -------------------------------------------------------------------------
     # Application-level entrypoint: money transfer → Paxos proposal
     # -------------------------------------------------------------------------
@@ -286,7 +358,6 @@ class Node:
         # 3) For Paxos, send a JSON-friendly representation
         #    so PaxosMessage.to_dict() / from_dict() can serialize it.
         self.start_paxos(depth=depth, value=block.to_dict())
-
 
     # -------------------------------------------------------------------------
     # Printing + local test (Person A: state + storage)
@@ -403,8 +474,6 @@ class Node:
         await asyncio.Event().wait()
 
 
-
-
 def load_config(config_path, my_id):
     """
     Read config/nodes.json and return:
@@ -463,7 +532,7 @@ def main():
     node = Node(me, peers)
     node.print_summary()
 
-    # For Milestone 2, we run the async networking skeleton instead of
+    # For Milestone 2+, we run the async networking skeleton instead of
     # the local-only blockchain test.
     asyncio.run(node.run_network())
 

@@ -12,14 +12,13 @@ class AccountsTable:
             balances = {}
         self.balances = balances
 
+    @staticmethod
     def fresh():
         """
         Create a new AccountsTable where every client starts with INITIAL_BALANCE.
         (Called as AccountsTable.fresh())
         """
-        balances = {}
-        for cid in CLIENT_IDS:
-            balances[cid] = INITIAL_BALANCE
+        balances = {cid: INITIAL_BALANCE for cid in CLIENT_IDS}
         return AccountsTable(balances)
 
     def can_debit(self, client_id, amount):

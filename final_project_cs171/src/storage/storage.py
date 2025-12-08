@@ -10,7 +10,6 @@ from ..blockchain.chain import Blockchain
 from ..accounts.accounts import AccountsTable
 
 
-
 def save_blockchain(blockchain, path):
     """
     Write the current blockchain (list of blocks) to a JSON file.
@@ -88,3 +87,79 @@ def load_balances(path):
 
     # data should be a dict: {"P1": 100, ...}
     return AccountsTable(data)
+
+
+# ---- Tentative / decided log helpers (Option 2) -----------------------------
+
+
+def _load_log(path: Path):
+    """
+    Internal helper: load the tentative/decided log as a dict.
+
+    Format:
+      {
+        "0": { "block": { ... }, "decided": false },
+        "1": { "block": { ... }, "decided": true },
+        ...
+      }
+    """
+    if not path.exists():
+        return {}
+
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return {}
+
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(data, dict):
+        # if file somehow got a list or something else, ignore it
+        return {}
+
+    return data
+
+
+def log_write_tentative(depth: int, block_dict: dict, path):
+    """
+    Write/update a *tentative* log entry for this depth.
+
+    - Does NOT mark it decided.
+    - If an entry already exists, we keep its decided flag (so we don't
+      accidentally flip decided back to false).
+
+    File: ledger_log.json in the node's data dir.
+    """
+    p = Path(path)
+    log = _load_log(p)
+
+    key = str(depth)
+    entry = log.get(key, {})
+    # always store the latest block dict
+    entry["block"] = block_dict
+    # preserve 'decided' if it was already true; otherwise default to False
+    entry["decided"] = entry.get("decided", False)
+
+    log[key] = entry
+    p.write_text(json.dumps(log, indent=2), encoding="utf-8")
+
+
+def log_mark_decided(depth: int, path):
+    """
+    Mark the given depth as decided in the log, if present.
+    """
+    p = Path(path)
+    log = _load_log(p)
+
+    key = str(depth)
+    if key not in log:
+        # nothing logged (e.g., node crashed before accept); just return
+        return
+
+    entry = log[key]
+    entry["decided"] = True
+    log[key] = entry
+
+    p.write_text(json.dumps(log, indent=2), encoding="utf-8")

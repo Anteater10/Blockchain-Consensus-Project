@@ -24,6 +24,7 @@ class PaxosInstance:
         send_func,
         broadcast_func,
         on_decide,
+        on_tentative=None,
     ):
         """
         depth          → which log index / block depth this instance is for
@@ -32,6 +33,8 @@ class PaxosInstance:
         send_func      → function(peer_id, PaxosMessage) to send a message
         broadcast_func → function(PaxosMessage) to send to all peers
         on_decide      → callback(depth, value) when a value is decided
+        on_tentative   → callback(depth, value) when this node *accepts* a value
+                         (used to log tentative blocks to disk)
         """
         self.depth = depth
         self.node_state = node_state
@@ -39,6 +42,7 @@ class PaxosInstance:
         self.send_func = send_func
         self.broadcast_func = broadcast_func
         self.on_decide = on_decide
+        self.on_tentative = on_tentative
 
         # proposer-side fields
         self.proposal_value = None              # value we want to propose (e.g., a Block)
@@ -285,6 +289,10 @@ class PaxosInstance:
             acc.accept_num = self.proposal_ballot
             acc.accept_val = chosen_value
 
+            # Log tentative for the leader's own acceptance
+            if self.on_tentative is not None and chosen_value is not None:
+                self.on_tentative(self.depth, chosen_value)
+
             local_accepted = PaxosMessage(
                 msg_type=PaxosMessageType.ACCEPTED,
                 from_id=self.node_state.node_id,
@@ -339,6 +347,10 @@ class PaxosInstance:
         )
 
         self.send_func(msg.from_id, accepted)
+
+        # Log this as a tentative acceptance on this node
+        if self.on_tentative is not None and msg.value is not None:
+            self.on_tentative(self.depth, msg.value)
 
     # -------------------------------------------------------------------------
     # Phase 2b (proposer side): collecting ACCEPTEDs

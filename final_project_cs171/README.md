@@ -1,6 +1,4 @@
-## Running the System & Manual Tests
-
-### How to Run the Nodes
+# 🚀 How to Run the Nodes
 
 From the **project root directory**:
 
@@ -31,22 +29,20 @@ Each node should print something like:
 
 ---
 
-## Manual Test Plan
+# 📘 Manual Test Plan
 
 ---
 
 ## ✅ PART 1 — Basic Sanity Tests
 
-### Test 1 — 5 Nodes Start Correctly
+---
+
+### **Test 1 — 5 Nodes Start Correctly**
 
 **Goal:** Ensure networking initializes and all nodes boot without crashing.
 
 **Steps:**
-
-1. Open 5 terminals.
-2. Run:
-
-```bash
+```
 ./run/run_p1.sh
 ./run/run_p2.sh
 ./run/run_p3.sh
@@ -55,25 +51,22 @@ Each node should print something like:
 ```
 
 **Expected:**
-
-- Each node prints startup summary.
-- Some initial “connect failed” messages are normal.
-- All peers eventually connect.
-- CLI prompt appears on all nodes.
+- Each node prints startup summary  
+- Some initial connection-failed messages are normal  
+- Peers eventually connect  
+- CLI prompt appears on all nodes  
 
 ---
 
-### Test 2 — printBalance, printBlockchain
+### **Test 2 — printBalance + printBlockchain**
 
 On any node:
-
 ```
 printBalance
 printBlockchain
 ```
 
-Expected balances:
-
+**Expected balances:**
 ```
 P1: 100
 P2: 100
@@ -82,8 +75,7 @@ P4: 100
 P5: 100
 ```
 
-Expected blockchain:
-
+**Expected blockchain:**
 ```
 === Blockchain ===
 (empty)
@@ -91,169 +83,171 @@ Expected blockchain:
 
 ---
 
-### Test 3 — Single moneyTransfer
+### **Test 3 — Single moneyTransfer**
 
-On P1:
-
+On **P1**:
 ```
 moneyTransfer 2 10
 ```
 
-Expected logs:
-
-- start_proposal
-- PROMISE
-- ACCEPTED
-- DECIDE
-
-Blockchain should contain:
-
+**Expected logs:**
 ```
-depth 0: P1 -> P2, amount=10
+start_proposal
+PROMISE
+ACCEPTED
+DECIDE
 ```
 
-Balances should be:
+**Expected blockchain:**
+```
+depth 0: P1 -> P2, amount = 10
+```
 
-- P1 = 90  
-- P2 = 110  
-- Others = 100  
+**Expected balances:**
+```
+P1 = 90
+P2 = 110
+Others = 100
+```
 
 ---
 
 ## ✅ PART 2 — Intermediate Tests
 
-### Test 4 — Multiple Transfers in Sequence
+---
+
+### **Test 4 — Multiple Transfers in Sequence**
 
 Commands:
-
-P1:
 ```
+# P1
 moneyTransfer 2 10
-```
 
-P2:
-```
+# P2
 moneyTransfer 3 5
-```
 
-P3:
-```
+# P3
 moneyTransfer 4 20
 ```
 
-Expected blockchain:
+**Expected blockchain:**
 
-| depth | tx              |
-|-------|-----------------|
-| 0     | P1 → P2 (10)    |
-| 1     | P2 → P3 (5)     |
-| 2     | P3 → P4 (20)    |
+| depth | tx               |
+|-------|------------------|
+| 0     | P1 → P2 (10)     |
+| 1     | P2 → P3 (5)      |
+| 2     | P3 → P4 (20)     |
 
 ---
 
-### Test 5 — Simultaneous Proposals
+### **Test 5 — Simultaneous Proposals**
 
-On P1 (don’t hit enter yet):
+Prepare:
 
+P1 (don’t press Enter yet):
 ```
 moneyTransfer 2 10
 ```
 
-On P2 (don’t hit enter yet):
-
+P2 (don’t press Enter yet):
 ```
 moneyTransfer 3 15
 ```
 
-Hit ENTER on both quickly.
+Press ENTER on both.
 
-Expected:
-
-One and only one value chosen at depth 0.
+**Expected:**
+- Only **one** proposal chosen at depth 0 (Paxos safety)
 
 ---
 
-### Test 6 — Crash During Consensus
+### **Test 6 — Crash During Consensus**
 
 On P1:
-
 ```
 moneyTransfer 2 10
 ```
 
-During PREPARE logs, on P5:
-
+During **PREPARE** logs on P5, run:
 ```
 failProcess
 ```
 
-Expected:
-
-- Paxos still reaches DECIDE (quorum=3).
-- P1–P4 apply the block.
-- Restarting P5 loads blockchain.json correctly.
+**Expected:**
+- Paxos still decides (quorum = 3)
+- P1–P4 commit block
+- Restart P5 → loads blockchain.json
 
 ---
 
-### Test 7 — Crash Before DECIDE Delivery
+### **Test 7 — Crash Before DECIDE Delivery**
 
-Kill a node during ACCEPTED messages.
+Kill any follower during ACCEPTED logs (Ctrl-C).
 
-Expected:
-
-A majority already accepted → value still decides.
+**Expected:**
+- Decision still completes (majority accepted)
+- Restarted node catches up
 
 ---
 
 ## ✅ PART 3 — Edge Cases
 
-### Edge Case 1 — Insufficient Funds
+---
+
+### **Edge Case 1 — Insufficient Funds**
 
 ```
 moneyTransfer 2 999999
 ```
 
-Expected:
-
-- "Insufficient funds"
+**Expected:**
+- `"Insufficient funds"`
 - No Paxos messages
 - No block added
 
 ---
 
-### Edge Case 2 — Out-of-Order Startup
+### **Edge Case 2 — Out-of-Order Startup**
 
-Start P3, P4, P5.
-Then start P1, P2.
+Startup order:
+```
+run_p3.sh
+run_p4.sh
+run_p5.sh
+run_p1.sh
+run_p2.sh
+```
 
-Expected:
-
-- Many initial connect-failed messages (normal)
-- Eventually stabilize and work
-
----
-
-### Edge Case 3 — Node Down at Later Depth
-
-1. Do 3 transfers.
-2. Kill P3:
-   ```
-   failProcess
-   ```
-3. Do 2 more transfers.
-4. Restart P3.
-
-Expected:
-
-- P3 remains behind
-- P3 must not propose conflicting blocks
+**Expected:**
+- Many “connect failed” logs (normal)
+- Nodes eventually sync
 
 ---
 
-### Edge Case 4 — Repeated Transfers at Same Node
+### **Edge Case 3 — Node Down at Later Depth**
+
+Do 3 transfers.  
+Kill P3:
+```
+failProcess
+```
+
+Do 2 more transfers.  
+Restart P3:
+```
+./run/run_p3.sh
+```
+
+**Expected:**
+- P3 remains behind initially
+- Never proposes conflicting blocks
+- Eventually syncs and matches others
+
+---
+
+### **Edge Case 4 — Repeated Transfers at Same Node**
 
 Spam:
-
 ```
 moneyTransfer 2 1
 moneyTransfer 2 1
@@ -261,21 +255,129 @@ moneyTransfer 2 1
 ...
 ```
 
-Expected:
-
-- Depth increments by 1 each time
-- All nodes agree on the entire chain
+**Expected:**
+- Depth increments steadily
+- All nodes agree
 
 ---
 
-### Edge Case 5 — Corrupt Files (Optional)
+### **Edge Case 5 — Corrupt Files (Optional)**
 
-Manually delete the last entry in blockchain.json for one node.
+Delete last entry in blockchain.json for one node.  
+Restart that node.
 
-Restart.
+**Expected:**
+- Node loads the shorter chain
+- Paxos prevents divergence
 
-Expected:
+---
 
-- Node loads shorter chain
-- Paxos prevents conflicting proposals
+## ✅ PART 4 — Additional Required Tests
 
+---
+
+### **Test 8 — Tentative vs Decided Logging**
+
+On any node:
+```
+moneyTransfer 2 10
+```
+
+Open **ledger_log.json**.
+
+**Expected:**
+- PROMISE / ACCEPTED → **tentative**
+- DECIDE → entry overwritten as **decided**
+
+---
+
+### **Test 9 — PoW Verification**
+
+```
+moneyTransfer 2 10
+printBlockchain
+```
+
+**Expected:**
+- hash ends in `{0,1,2,3,4}`
+- prev_hash matches previous block
+- nonce printed
+
+---
+
+### **Test 10 — Multi-Node Consistency (All 5 Nodes)**
+
+On all nodes:
+```
+printBlockchain
+printBalance
+```
+
+**Expected:**
+- All blockchains identical
+- All balances identical
+- Total = **500**
+
+---
+
+### **Test 11 — Invalid Input Handling**
+
+```
+moneyTransfer 2 two
+moneyTransfer 8 10
+moneyTransfer 2 -5
+moneyTransfer 2 0
+```
+
+**Expected:**
+- Clean error messages
+- No Paxos activity
+- No new blocks
+
+---
+
+### **Test 12 — Proposer Crash + Recovery**
+
+On P1:
+```
+moneyTransfer 2 10
+```
+
+Kill P1 **after DECIDE appears**.
+
+Restart:
+```
+./run/run_p1.sh
+```
+
+**Expected:**
+- P1 reloads blockchain from disk
+- Matches other nodes
+
+---
+
+### **Test 13 — Long-Run Stress Test**
+
+Repeatedly run:
+```
+moneyTransfer 2 1
+moneyTransfer 3 1
+moneyTransfer 4 1
+moneyTransfer 5 1
+```
+
+**Expected:**
+- Many blocks added without errors
+- Total money = **500**
+
+---
+
+# ✅ End of Test Plan
+
+---
+
+If you want, I can also generate:
+
+✅ A **TA-ready shortened version**  
+✅ A **1-page demo script**  
+✅ A **PDF version** with formatting  
