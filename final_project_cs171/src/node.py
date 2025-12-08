@@ -34,6 +34,7 @@ from .storage.storage import (
     load_balances,
     log_write_tentative,
     log_mark_decided,
+    load_ledger_log,
 )
 from .blockchain.block import Block
 from .network.server import start_server
@@ -72,9 +73,114 @@ class Node:
         # depth -> PaxosInstance
         self.paxos_instances: dict[int, PaxosInstance] = {}
 
+        # Perform crash recovery using ledger_log.json (extra credit)
+        self._recover_from_ledger()
+
         # Networking: server + outgoing client
         self.server: asyncio.AbstractServer | None = None
         self.net_client: NetworkClient | None = None
+
+    # -------------------------------------------------------------------------
+    # Helpers for first_uncommitted_index (cluster recovery)
+    # -------------------------------------------------------------------------
+
+    def _compute_first_uncommitted_index(self) -> int:
+        """
+        Return this node's first_uncommitted_index.
+
+        We treat the committed/applied prefix as exactly the current
+        blockchain length. Anything >= this index is "uncommitted".
+        """
+        return self.blockchain.length()
+
+    def _repair_peer_chain(self, peer_id: int, peer_index: int, local_index: int) -> None:
+        """
+        Repair logic invoked by PaxosInstance based on first_uncommitted_index.
+
+        - If peer_index < local_index: peer is behind; send REPAIR_BLOCKS
+          for depths [peer_index, local_index).
+
+        - If local_index < peer_index: this node is behind; send a
+          REPAIR_REQUEST asking the peer to send blocks [local_index, peer_index).
+
+        This is a synchronous callback; it schedules async network work
+        via asyncio.create_task.
+        """
+        if self.net_client is None:
+            print(
+                f"[NODE {self.config.id}] _repair_peer_chain: net_client not ready",
+                flush=True,
+            )
+            return
+
+        # Normalize
+        if peer_index is None:
+            return
+
+        peer_index = int(peer_index)
+        local_index = int(local_index)
+
+        # Case 1: peer behind → push blocks
+        if peer_index < local_index:
+            start_depth = max(peer_index, 0)
+            end_depth = local_index
+
+            # Collect blocks [start_depth, end_depth)
+            missing_blocks = []
+            for depth in range(start_depth, end_depth):
+                if 0 <= depth < len(self.blockchain.blocks):
+                    missing_blocks.append(self.blockchain.blocks[depth].to_dict())
+
+            if not missing_blocks:
+                return
+
+            payload = {
+                "repair_type": "REPAIR_BLOCKS",
+                "from_id": self.config.id,
+                "target_id": peer_id,
+                "start_depth": start_depth,
+                "end_depth": end_depth,
+                "blocks": missing_blocks,
+            }
+
+            print(
+                f"[NODE {self.config.id}] Sending REPAIR_BLOCKS to node {peer_id} "
+                f"for depths [{start_depth}, {end_depth})",
+                flush=True,
+            )
+
+            async def _send():
+                await self.net_client.send_to_peer(peer_id, payload)
+
+            asyncio.create_task(_send())
+            return
+
+        # Case 2: we are behind → request repair
+        if local_index < peer_index:
+            start_depth = max(local_index, 0)
+            end_depth = peer_index
+
+            payload = {
+                "repair_type": "REPAIR_REQUEST",
+                "from_id": self.config.id,
+                "target_id": peer_id,
+                "start_depth": start_depth,
+                "end_depth": end_depth,
+            }
+
+            print(
+                f"[NODE {self.config.id}] Sending REPAIR_REQUEST to node {peer_id} "
+                f"for depths [{start_depth}, {end_depth})",
+                flush=True,
+            )
+
+            async def _send_req():
+                await self.net_client.send_to_peer(peer_id, payload)
+
+            asyncio.create_task(_send_req())
+            return
+
+        # Equal indexes → nothing to do.
 
     # -------------------------------------------------------------------------
     # Helper: build peer map for NetworkClient
@@ -113,6 +219,8 @@ class Node:
                 broadcast_func=self._broadcast_paxos,
                 on_decide=self._on_paxos_decide,
                 on_tentative=self._on_paxos_tentative,
+                get_first_uncommitted=self._compute_first_uncommitted_index,
+                repair_callback=self._repair_peer_chain,
             )
             self.paxos_instances[depth] = inst
         return self.paxos_instances[depth]
@@ -313,11 +421,175 @@ class Node:
 
         asyncio.create_task(_run())
 
+    # -------------------------------------------------------------------------
+    # Cluster repair message handling
+    # -------------------------------------------------------------------------
+
+    async def _handle_repair_message(self, d: dict):
+        """
+        Handle incoming repair messages (not Paxos messages).
+
+        Two types:
+
+          REPAIR_BLOCKS:
+            {
+              "repair_type": "REPAIR_BLOCKS",
+              "from_id": <sender_id>,
+              "target_id": <int>,
+              "start_depth": <int>,
+              "end_depth": <int>,
+              "blocks": [block_dicts...]
+            }
+
+          REPAIR_REQUEST:
+            {
+              "repair_type": "REPAIR_REQUEST",
+              "from_id": <sender_id>,
+              "target_id": <int>,
+              "start_depth": <int>,
+              "end_depth": <int>
+            }
+        """
+        rtype = d.get("repair_type")
+        if rtype not in ("REPAIR_BLOCKS", "REPAIR_REQUEST"):
+            print(
+                f"[NODE {self.config.id}] Unknown repair_type={rtype}",
+                flush=True,
+            )
+            return
+
+        target_id = d.get("target_id")
+        if target_id != self.config.id:
+            # Not for us.
+            return
+
+        if rtype == "REPAIR_REQUEST":
+            # Peer is asking us to send blocks [start_depth, end_depth).
+            if self.net_client is None:
+                return
+
+            start_depth = int(d.get("start_depth", 0))
+            end_depth = int(d.get("end_depth", 0))
+            sender_id = int(d.get("from_id"))
+
+            missing_blocks = []
+            for depth in range(start_depth, end_depth):
+                if 0 <= depth < len(self.blockchain.blocks):
+                    missing_blocks.append(self.blockchain.blocks[depth].to_dict())
+
+            if not missing_blocks:
+                return
+
+            payload = {
+                "repair_type": "REPAIR_BLOCKS",
+                "from_id": self.config.id,
+                "target_id": sender_id,
+                "start_depth": start_depth,
+                "end_depth": end_depth,
+                "blocks": missing_blocks,
+            }
+
+            print(
+                f"[NODE {self.config.id}] Responding to REPAIR_REQUEST from node {sender_id} "
+                f"with REPAIR_BLOCKS for depths [{start_depth}, {end_depth})",
+                flush=True,
+            )
+
+            await self.net_client.send_to_peer(sender_id, payload)
+            return
+
+        # REPAIR_BLOCKS path
+        blocks = d.get("blocks", [])
+        if not isinstance(blocks, list):
+            return
+
+        print(
+            f"[NODE {self.config.id}] Received REPAIR_BLOCKS with {len(blocks)} blocks "
+            f"from node {d.get('from_id')}",
+            flush=True,
+        )
+
+        # Sort by depth for safety.
+        try:
+            blocks_sorted = sorted(blocks, key=lambda bd: bd.get("depth", 0))
+        except Exception:
+            blocks_sorted = blocks
+
+        for block_dict in blocks_sorted:
+            try:
+                block = Block.from_dict(block_dict)
+            except Exception as e:
+                print(
+                    f"[NODE {self.config.id}] ERROR reconstructing repaired block: {e}",
+                    flush=True,
+                )
+                continue
+
+            depth = block.depth
+
+            # If we already have a block at this depth, check consistency.
+            if depth < len(self.blockchain.blocks):
+                existing = self.blockchain.blocks[depth]
+                if existing.hash != block.hash:
+                    print(
+                        f"[NODE {self.config.id}] WARNING: repair block at depth={depth} "
+                        f"hash mismatch; keeping existing",
+                        flush=True,
+                    )
+                continue
+
+            # We only accept appends at current chain length.
+            if depth != self.blockchain.length():
+                print(
+                    f"[NODE {self.config.id}] WARNING: repair block depth={depth} "
+                    f"!= current chain length={self.blockchain.length()} – skipping",
+                    flush=True,
+                )
+                continue
+
+            # Append and apply tx
+            try:
+                self.blockchain.append_block(block)
+            except ValueError as e:
+                print(
+                    f"[NODE {self.config.id}] ERROR appending repaired block at depth={depth}: {e}",
+                    flush=True,
+                )
+                continue
+
+            sender, receiver, amount = block.tx
+            try:
+                self.accounts.apply_transaction(block.tx)
+            except Exception as e:
+                print(
+                    f"[NODE {self.config.id}] ERROR applying repaired tx at depth={depth}: {e}",
+                    flush=True,
+                )
+                continue
+
+            print(
+                f"[NODE {self.config.id}] Applied repaired block at depth={depth}: "
+                f"{sender} -> {receiver}, amount={amount}",
+                flush=True,
+            )
+
+        # Persist repaired state
+        save_blockchain(self.blockchain, self.blockchain_path)
+        save_balances(self.accounts, self.balances_path)
+
     async def handle_incoming_paxos_dict(self, d):
         """
         Network server hook: given an incoming JSON dict,
-        decode into a PaxosMessage and route it to the correct PaxosInstance.
+        either:
+          - treat it as a repair message (repair_type present), or
+          - decode into a PaxosMessage and route it to the correct PaxosInstance.
         """
+        # Handle repair messages first (non-Paxos)
+        if "repair_type" in d:
+            await self._handle_repair_message(d)
+            return
+
+        # Normal Paxos path
         msg = PaxosMessage.from_dict(d)
         inst = self._get_paxos_instance(msg.depth)
         inst.handle_message(msg)
@@ -472,6 +744,115 @@ class Node:
 
         # 4) Keep running forever
         await asyncio.Event().wait()
+
+    # -------------------------------------------------------------------------
+    # Crash recovery using ledger_log.json (extra credit)
+    # -------------------------------------------------------------------------
+
+    def _recover_from_ledger(self):
+        """
+        Extra-credit recovery:
+
+        1) Load ledger_log.json.
+        2) For any entry marked decided=True that is not yet in the blockchain,
+           append the block and apply its transaction.
+        3) For all entries (decided or tentative), seed Paxos acceptor state
+           so this node remembers its AcceptVal at each depth.
+        """
+        entries = load_ledger_log(self.log_path)
+        if not entries:
+            print(f"[NODE {self.config.id}] No ledger_log.json or empty; nothing to recover")
+            return
+
+        print(f"[NODE {self.config.id}] Recovering from ledger_log.json with {len(entries)} entries")
+
+        # 1) Repair blockchain/balances from decided entries
+        #    We only add blocks that are missing from the chain.
+        for depth in sorted(entries.keys()):
+            entry = entries[depth]
+            decided = entry.get("decided", False)
+            block_dict = entry["block"]
+
+            if not decided:
+                continue
+
+            block = Block.from_dict(block_dict)
+
+            # If this depth is already in the blockchain, sanity-check and skip
+            if block.depth < len(self.blockchain.blocks):
+                existing = self.blockchain.blocks[block.depth]
+                if existing.hash != block.hash:
+                    print(
+                        f"[NODE {self.config.id}] WARNING: ledger decided block at depth={block.depth} "
+                        f"hash mismatch with blockchain",
+                        flush=True,
+                    )
+                continue
+
+            # We expect either depth == current length (append), or things are weird.
+            if block.depth != self.blockchain.length():
+                print(
+                    f"[NODE {self.config.id}] WARNING: decided block depth={block.depth} "
+                    f"does not match current chain length={self.blockchain.length()} – skipping",
+                    flush=True,
+                )
+                continue
+
+            # Append and apply tx
+            try:
+                self.blockchain.append_block(block)
+            except ValueError as e:
+                print(
+                    f"[NODE {self.config.id}] ERROR appending recovered decided block at depth={depth}: {e}",
+                    flush=True,
+                )
+                continue
+
+            sender, receiver, amount = block.tx
+            try:
+                self.accounts.apply_transaction(block.tx)
+            except Exception as e:
+                print(
+                    f"[NODE {self.config.id}] ERROR applying recovered tx at depth={depth}: {e}",
+                    flush=True,
+                )
+                # If balances.json is corrupted vs chain, this might trip.
+                # Keep going for now.
+                continue
+
+            print(
+                f"[NODE {self.config.id}] Recovered decided block at depth={depth}: "
+                f"{sender} -> {receiver}, amount={amount}",
+                flush=True,
+            )
+
+        # Persist repaired state
+        save_blockchain(self.blockchain, self.blockchain_path)
+        save_balances(self.accounts, self.balances_path)
+
+        # 2) Seed Paxos acceptor state from BOTH tentative and decided entries.
+        #    This makes the node remember AcceptVal for this depth.
+        for depth in sorted(entries.keys()):
+            entry = entries[depth]
+            block_dict = entry["block"]
+
+            # Treat the block value the same way Paxos sees it over the network: as a dict
+            acc = self.paxos_state.get_acceptor_state(depth)
+
+            # Create a synthetic ballot for this acceptance.
+            # We don't know the exact original ballot, but we only need a
+            # consistent AcceptNum so that future PROMISEs report the right AcceptVal.
+            seq = self.paxos_state.next_seq_num
+            self.paxos_state.next_seq_num += 1
+            synthetic_ballot = (seq, self.paxos_state.node_id, depth)
+
+            # Ensure BallotNum >= AcceptNum
+            if acc.ballot_num < synthetic_ballot:
+                acc.ballot_num = synthetic_ballot
+            acc.accept_num = synthetic_ballot
+            acc.accept_val = block_dict
+
+        print(f"[NODE {self.config.id}] Recovery seeding of Paxos acceptor state completed")
 
 
 def load_config(config_path, my_id):

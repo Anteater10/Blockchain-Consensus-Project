@@ -25,16 +25,22 @@ class PaxosInstance:
         broadcast_func,
         on_decide,
         on_tentative=None,
+        get_first_uncommitted=None,
+        repair_callback=None,
     ):
         """
-        depth          → which log index / block depth this instance is for
-        node_state     → PaxosNodeState shared by this node
-        peers          → list of peer node ids (other acceptors; self is implicit)
-        send_func      → function(peer_id, PaxosMessage) to send a message
-        broadcast_func → function(PaxosMessage) to send to all peers
-        on_decide      → callback(depth, value) when a value is decided
-        on_tentative   → callback(depth, value) when this node *accepts* a value
-                         (used to log tentative blocks to disk)
+        depth               → which log index / block depth this instance is for
+        node_state          → PaxosNodeState shared by this node
+        peers               → list of peer node ids (other acceptors; self is implicit)
+        send_func           → function(peer_id, PaxosMessage) to send a message
+        broadcast_func      → function(PaxosMessage) to send to all peers
+        on_decide           → callback(depth, value) when a value is decided
+        on_tentative        → callback(depth, value) when this node *accepts* a value
+                               (used to log tentative blocks to disk)
+        get_first_uncommitted → callable returning this node's first_uncommitted_index
+                                (used for recovery hints in messages)
+        repair_callback     → callable(peer_id, peer_index, local_index) used to
+                               trigger repair (push/pull) based on indices
         """
         self.depth = depth
         self.node_state = node_state
@@ -43,6 +49,8 @@ class PaxosInstance:
         self.broadcast_func = broadcast_func
         self.on_decide = on_decide
         self.on_tentative = on_tentative
+        self.get_first_uncommitted = get_first_uncommitted
+        self.repair_callback = repair_callback
 
         # proposer-side fields
         self.proposal_value = None              # value we want to propose (e.g., a Block)
@@ -69,6 +77,15 @@ class PaxosInstance:
         """
         total = len(self.peers) + 1
         return total // 2 + 1
+
+    def _current_first_uncommitted(self) -> int | None:
+        """
+        Helper to fetch the node's current first_uncommitted_index
+        via the callback provided by Node.
+        """
+        if self.get_first_uncommitted is None:
+            return None
+        return self.get_first_uncommitted()
 
     # -------------------------------------------------------------------------
     # Proposer entrypoint (Phase 1a: PREPARE)
@@ -113,6 +130,7 @@ class PaxosInstance:
                 depth=self.depth,
                 accept_num=acc.accept_num,
                 accept_val=acc.accept_val,
+                first_uncommitted=self._current_first_uncommitted(),
             )
             # Directly handle our own PROMISE (no network hop).
             self._on_promise(local_promise)
@@ -131,6 +149,7 @@ class PaxosInstance:
             from_id=self.node_state.node_id,
             ballot=self.proposal_ballot,
             depth=self.depth,
+            first_uncommitted=self._current_first_uncommitted(),
         )
         self.broadcast_func(prepare_msg)
 
@@ -187,6 +206,7 @@ class PaxosInstance:
             depth=self.depth,
             accept_num=acc.accept_num,
             accept_val=acc.accept_val,
+            first_uncommitted=self._current_first_uncommitted(),
         )
 
         print(
@@ -279,6 +299,7 @@ class PaxosInstance:
             ballot=self.proposal_ballot,
             depth=self.depth,
             value=chosen_value,
+            first_uncommitted=self._current_first_uncommitted(),
         )
         self.broadcast_func(accept_msg)
 
@@ -299,6 +320,7 @@ class PaxosInstance:
                 ballot=self.proposal_ballot,
                 depth=self.depth,
                 value=chosen_value,
+                first_uncommitted=self._current_first_uncommitted(),
             )
             self._on_accepted(local_accepted)
 
@@ -338,6 +360,7 @@ class PaxosInstance:
             ballot=msg.ballot,
             depth=self.depth,
             value=msg.value,
+            first_uncommitted=self._current_first_uncommitted(),
         )
 
         print(
@@ -361,6 +384,7 @@ class PaxosInstance:
         Proposer logic on receiving ACCEPTED(ballot, value):
 
         - Only consider ACCEPTEDs for our current proposal_ballot.
+        - Use first_uncommitted_index hints to drive repair.
         - Once we reach a quorum, broadcast DECIDE(value) and
           apply it locally.
         """
@@ -389,6 +413,14 @@ class PaxosInstance:
 
         self.accepted_received[msg.from_id] = msg
 
+        # Use first_uncommitted_index hint for eager repair.
+        if msg.first_uncommitted is not None and self.repair_callback is not None:
+            local_idx = self._current_first_uncommitted()
+            peer_idx = int(msg.first_uncommitted)
+            if local_idx is not None and peer_idx != local_idx:
+                # Delegate repair logic to Node.
+                self.repair_callback(msg.from_id, peer_idx, local_idx)
+
         print(
             f"[PAXOS depth={self.depth}] ACCEPTED from {msg.from_id} "
             f"(total={len(self.accepted_received)}/{self._quorum_size()})",
@@ -406,6 +438,7 @@ class PaxosInstance:
             ballot=self.proposal_ballot,
             depth=self.depth,
             value=self.proposal_value,
+            first_uncommitted=self._current_first_uncommitted(),
         )
 
         print(

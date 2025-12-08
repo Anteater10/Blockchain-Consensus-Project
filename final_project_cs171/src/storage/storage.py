@@ -163,3 +163,45 @@ def log_mark_decided(depth: int, path):
     log[key] = entry
 
     p.write_text(json.dumps(log, indent=2), encoding="utf-8")
+
+
+def load_ledger_log(path):
+    """
+    Load the tentative/decided ledger log from JSON.
+
+    Returns a dict:
+        { depth:int -> {"block": <block_dict>, "decided": bool} }
+
+    If the file is missing or invalid, return {}.
+    """
+    p = Path(path)
+    if not p.exists():
+        return {}
+
+    text = p.read_text(encoding="utf-8").strip()
+    if text == "":
+        return {}
+
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+
+    result = {}
+    for depth_str, entry in raw.items():
+        try:
+            depth = int(depth_str)
+        except ValueError:
+            continue
+
+        block_dict = entry.get("block")
+        decided = bool(entry.get("decided", False))
+        if not isinstance(block_dict, dict):
+            continue
+
+        result[depth] = {
+            "block": block_dict,
+            "decided": decided,
+        }
+
+    return result

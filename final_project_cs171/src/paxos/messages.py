@@ -37,18 +37,18 @@ class PaxosMessage:
         value=None,
         accept_num: Ballot | None = None,
         accept_val=None,
+        first_uncommitted: int | None = None,
     ):
         """
-        msg_type   → one of the PaxosMessageType values
-        from_id    → sender node id (proposer/acceptor)
-        ballot     → (seq_num, proposer_id, depth) unique proposal number
-        depth      → log index / block depth this message is about
-        value      → proposed value (used in ACCEPT / ACCEPTED / DECIDE)
-        accept_num → last accepted ballot (AcceptNum) reported in PROMISE
-        accept_val → last accepted value (AcceptVal) reported in PROMISE
-
-        Layout mirrors the pseudocode where PROMISE carries back
-        (AcceptNum, AcceptVal) and ACCEPT/ACCEPTED/DECIDE carry (b, v).
+        msg_type          → one of the PaxosMessageType values
+        from_id           → sender node id (proposer/acceptor)
+        ballot            → (seq_num, proposer_id, depth) unique proposal number
+        depth             → log index / block depth this message is about
+        value             → proposed value (used in ACCEPT / ACCEPTED / DECIDE)
+        accept_num        → last accepted ballot (AcceptNum) reported in PROMISE
+        accept_val        → last accepted value (AcceptVal) reported in PROMISE
+        first_uncommitted → hint: sender's first_uncommitted_index
+                            (used for crash/partition recovery)
         """
         self.type = msg_type
         self.from_id = from_id
@@ -57,6 +57,7 @@ class PaxosMessage:
         self.value = value
         self.accept_num = accept_num
         self.accept_val = accept_val
+        self.first_uncommitted = first_uncommitted
 
     def to_dict(self) -> dict:
         """
@@ -84,6 +85,9 @@ class PaxosMessage:
         if self.accept_val is not None:
             d["accept_val"] = self.accept_val
 
+        if self.first_uncommitted is not None:
+            d["first_uncommitted"] = self.first_uncommitted
+
         return d
 
     @staticmethod
@@ -102,6 +106,8 @@ class PaxosMessage:
         if "accept_num" in d and d["accept_num"] is not None:
             accept_num = tuple(d["accept_num"])
 
+        first_uncommitted = d.get("first_uncommitted")
+
         return PaxosMessage(
             msg_type=msg_type,
             from_id=int(d["from_id"]),
@@ -110,4 +116,5 @@ class PaxosMessage:
             value=d.get("value"),
             accept_num=accept_num,
             accept_val=d.get("accept_val"),
+            first_uncommitted=first_uncommitted,
         )

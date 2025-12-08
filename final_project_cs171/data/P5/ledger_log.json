@@ -7,9 +7,9 @@
         "P2",
         10
       ],
-      "nonce": "5f3bf8ffcb9e327016a87263e28bddf3",
+      "nonce": "d3c0888369e095b132619c3bcbffa5dd",
       "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-      "hash": "3b9ae07a879ce692b5941e40b538a7da0cc2e6e48fb6f62393f04d1940edd364"
+      "hash": "5effcf27d4f2fe4e1193dda098fc4a3ec5a1e93925518db0c3f076dde08c0001"
     },
     "decided": true
   },
@@ -18,12 +18,12 @@
       "depth": 1,
       "tx": [
         "P1",
-        "P2",
-        10
+        "P3",
+        5
       ],
-      "nonce": "c4c89850d28cdcf807356bc1dbdaa41e",
-      "prev_hash": "3b9ae07a879ce692b5941e40b538a7da0cc2e6e48fb6f62393f04d1940edd364",
-      "hash": "79fbac41bff3aa917ee4b37b7dfb58ea9db73b3b03d5bfc9cc5402f1878b5971"
+      "nonce": "fbc53b9960c0618f2e6bc0c1704d4818",
+      "prev_hash": "5effcf27d4f2fe4e1193dda098fc4a3ec5a1e93925518db0c3f076dde08c0001",
+      "hash": "0c77bf9c2a5c48d9270fc1dbb935f32c552eb9c2f6d3c2f7042ecc1dcc0d0af2"
     },
     "decided": true
   },
@@ -31,55 +31,13 @@
     "block": {
       "depth": 2,
       "tx": [
-        "P2",
+        "P1",
         "P3",
         5
       ],
-      "nonce": "8607fa4f41c65748eda6f1a4c5b40ca9",
-      "prev_hash": "79fbac41bff3aa917ee4b37b7dfb58ea9db73b3b03d5bfc9cc5402f1878b5971",
-      "hash": "fb7f13ee5d6ae05be1977432a024b94960dcb7720c24ad590d16390c4cc152e0"
-    },
-    "decided": true
-  },
-  "3": {
-    "block": {
-      "depth": 3,
-      "tx": [
-        "P3",
-        "P4",
-        20
-      ],
-      "nonce": "c3620ab7932aad55f456a31249baa0c1",
-      "prev_hash": "fb7f13ee5d6ae05be1977432a024b94960dcb7720c24ad590d16390c4cc152e0",
-      "hash": "cce43553c1fd4f25bb6bbed89593f0166aee72d0b7c831d2c8fd903ec95fd534"
-    },
-    "decided": true
-  },
-  "4": {
-    "block": {
-      "depth": 4,
-      "tx": [
-        "P1",
-        "P2",
-        1
-      ],
-      "nonce": "400f4eebdfe94bf73b9866e838b4d0a2",
-      "prev_hash": "cce43553c1fd4f25bb6bbed89593f0166aee72d0b7c831d2c8fd903ec95fd534",
-      "hash": "5310894c0c21c4a9e5b60738ecc7def3789cc59448a84080bdafd63ae70c9243"
-    },
-    "decided": true
-  },
-  "5": {
-    "block": {
-      "depth": 5,
-      "tx": [
-        "P2",
-        "P3",
-        15
-      ],
-      "nonce": "6096e22747ca9572fce05200e071e28a",
-      "prev_hash": "5310894c0c21c4a9e5b60738ecc7def3789cc59448a84080bdafd63ae70c9243",
-      "hash": "b66519d317b3a5ce72c1379bc963f4505eff92c6b916114aa440d8a0b790f854"
+      "nonce": "c6db2ac1904e22151705f3ab77384e43",
+      "prev_hash": "0c77bf9c2a5c48d9270fc1dbb935f32c552eb9c2f6d3c2f7042ecc1dcc0d0af2",
+      "hash": "4301eb702c2a4819608ed62ed64b4bba2312b1539ee659d64eb0464614d2d913"
     },
     "decided": true
   }
