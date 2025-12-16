@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 set -e
 
-# Navigate to project root (script → parent → root)
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-
 echo "[RUN] Killing all node processes (anything running src.node)"
-
-# Find all PIDs whose full command line contains "src.node"
 PIDS=$(pgrep -f "src.node" || true)
 
 if [ -z "$PIDS" ]; then

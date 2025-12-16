@@ -11,9 +11,6 @@ from ..accounts.accounts import AccountsTable
 
 
 def save_blockchain(blockchain, path):
-    """
-    Write the current blockchain (list of blocks) to a JSON file.
-    """
     p = Path(path)
     blocks_data = []
     for b in blockchain.blocks:
@@ -24,10 +21,6 @@ def save_blockchain(blockchain, path):
 
 
 def load_blockchain(path):
-    """
-    Load a blockchain from a JSON file.
-    If the file does not exist, or is invalid, return an empty chain.
-    """
     p = Path(path)
     chain = Blockchain()
 
@@ -52,9 +45,6 @@ def load_blockchain(path):
 
 
 def save_balances(accounts, path):
-    """
-    Save balances to JSON. 'accounts' can be an AccountsTable or a dict.
-    """
     p = Path(path)
 
     if isinstance(accounts, AccountsTable):
@@ -67,10 +57,6 @@ def save_balances(accounts, path):
 
 
 def load_balances(path):
-    """
-    Load balances from JSON.
-    If the file doesn't exist or is invalid, return a fresh AccountsTable.
-    """
     p = Path(path)
 
     if not p.exists():
@@ -89,20 +75,7 @@ def load_balances(path):
     return AccountsTable(data)
 
 
-# ---- Tentative / decided log helpers (Option 2) -----------------------------
-
-
 def _load_log(path: Path):
-    """
-    Internal helper: load the tentative/decided log as a dict.
-
-    Format:
-      {
-        "0": { "block": { ... }, "decided": false },
-        "1": { "block": { ... }, "decided": true },
-        ...
-      }
-    """
     if not path.exists():
         return {}
 
@@ -123,15 +96,6 @@ def _load_log(path: Path):
 
 
 def log_write_tentative(depth: int, block_dict: dict, path):
-    """
-    Write/update a *tentative* log entry for this depth.
-
-    - Does NOT mark it decided.
-    - If an entry already exists, we keep its decided flag (so we don't
-      accidentally flip decided back to false).
-
-    File: ledger_log.json in the node's data dir.
-    """
     p = Path(path)
     log = _load_log(p)
 
@@ -147,9 +111,6 @@ def log_write_tentative(depth: int, block_dict: dict, path):
 
 
 def log_mark_decided(depth: int, path):
-    """
-    Mark the given depth as decided in the log, if present.
-    """
     p = Path(path)
     log = _load_log(p)
 
@@ -166,14 +127,6 @@ def log_mark_decided(depth: int, path):
 
 
 def load_ledger_log(path):
-    """
-    Load the tentative/decided ledger log from JSON.
-
-    Returns a dict:
-        { depth:int -> {"block": <block_dict>, "decided": bool} }
-
-    If the file is missing or invalid, return {}.
-    """
     p = Path(path)
     if not p.exists():
         return {}

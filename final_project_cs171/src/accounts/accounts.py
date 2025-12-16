@@ -1,7 +1,8 @@
 # src/accounts/accounts.py
 
-# this file keeps track of balances for each client
-# uses a list of all clients in the system
+# Keeps track of account balances for all known clients.
+# Uses CLIENT_IDS and INITIAL_BALANCE to create a new AccountsTable,
+# Applies money transfer transactions by debiting the sender and crediting the receiver.
 
 CLIENT_IDS = ["P1", "P2", "P3", "P4", "P5"]
 INITIAL_BALANCE = 100  # starting money for each client
@@ -14,12 +15,8 @@ class AccountsTable:
 
     @staticmethod
     def fresh():
-        """
-        Create a new AccountsTable where every client starts with INITIAL_BALANCE.
-        (Called as AccountsTable.fresh())
-        """
         balances = {cid: INITIAL_BALANCE for cid in CLIENT_IDS}
-        return AccountsTable(balances)
+        return AccountsTable(balances) # Create a new AccountsTable where every client starts with INITIAL_BALANCE.
 
     def can_debit(self, client_id, amount):
         current = self.balances.get(client_id, 0)
@@ -29,7 +26,12 @@ class AccountsTable:
         sender, receiver, amount = tx
 
         if not self.can_debit(sender, amount):
-            print(f"[ACCOUNTS] insufficient funds for {sender} (tried to send {amount})")
+            current = self.balances.get(sender, 0)
+            print(
+                f"[ACCOUNTS] Rejecting transaction: {sender} -> {receiver}, "
+                f"amount={amount} (balance at this node = {current})",
+                flush=True,
+            )
             raise ValueError(f"Insufficient funds for {sender}")
 
         self.balances[sender] -= amount

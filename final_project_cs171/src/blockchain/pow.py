@@ -7,7 +7,7 @@ import hashlib, os
 
 def tx_to_bytes(tx):
     sender, receiver, amount = tx
-    text = f"{sender}:{receiver}:{amount}" # Convert a transaction, so we can hash it.
+    text = f"{sender}:{receiver}:{amount}" # Convert a transaction, so can hash it.
     return text.encode("utf-8")
 
 def compute_pow(tx):

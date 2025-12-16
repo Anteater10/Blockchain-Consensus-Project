@@ -1,6 +1,9 @@
 # src/blockchain/block.py
-# This file defines the Block class used in our blockchain.
-# Each block stores one transaction plus the proof of work fields.
+
+# Defines the Block class used in our blockchain.
+# A block represents one transaction at a specific depth. 
+# Defines the proof of work attributes. 
+# Blocks are serialized and then deserialized using dicts so they can be persisted as JSON.
 
 class Block:
     def __init__(self, depth, tx, nonce, prev_hash, hash_value):
@@ -10,10 +13,8 @@ class Block:
         self.prev_hash = prev_hash
         self.hash = hash_value
 
+    # Convert a Block into a plain dict so it can be written as JSON.
     def to_dict(self):
-        """
-        Convert this Block into a plain dict so it can be written as JSON.
-        """
         sender, receiver, amount = self.tx
         return {
             "depth": self.depth,
@@ -24,10 +25,8 @@ class Block:
         }
 
     @staticmethod
+    # Convert a a plain dict back into a block. Essentially build back the block
     def from_dict(d):
-        """
-        Build a Block object back from the dict we stored in JSON.
-        """
         depth = int(d["depth"])
         sender, receiver, amount = d["tx"]
         tx = (sender, receiver, amount)

@@ -1,35 +1,38 @@
 # src/network/server.py
 #
 # Networking "server" for a node: accepts incoming connections and
-# feeds decoded JSON messages to a handler callback.
+# delivers decoded JSON messages to the node’s message handler.
 #
-# Milestone 1: stub that just:
-#   - starts an asyncio server
-#   - uses recv_json per line
-#   - calls an on_message callback for each decoded dict
+# Milestone 1:
+#   - start an asyncio server
+#   - read one JSON object per line using recv_json
+#   - invoke on_message for every decoded message
+#
+# Milestone 2:
+#   - durable loop for each connection
+#   - proper cleanup when peers disconnect or errors occur
+#
+# Milestone 3:
+#   - fully supports Paxos traffic (Prepare, Promise, Accept, Accepted, Decide)
+#   - server is the entry point for all inbound Paxos and block-related messages
+#
+# Final updates:
+#   - works together with send_json_with_delay on the client side
+#   - provides the stable inbound path used by tentative and decided block flow
+#   - prints connection lifecycle events for debugging and grading clarity
 
 import asyncio
 from typing import Awaitable, Callable, Dict, Any
 
 from .protocol import recv_json
 
-
 OnMessageCallback = Callable[[Dict[str, Any]], Awaitable[None]]
-
 
 async def start_server(
     host: str,
     port: int,
     on_message: OnMessageCallback,
 ) -> asyncio.AbstractServer:
-    """
-    Start an asyncio server that listens on (host, port) and forwards
-    each JSON-decoded message dict to 'on_message'.
-
-    The callback is responsible for interpreting the dict (e.g., turning
-    it into a PaxosMessage and dispatching to the right PaxosInstance).
-    """
-
     async def handle_conn(
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
@@ -40,8 +43,6 @@ async def start_server(
         try:
             while True:
                 msg = await recv_json(reader)
-                # For Milestone 1, we don't do per-connection routing.
-                # Just call the provided callback.
                 await on_message(msg)
         except ConnectionError:
             pass

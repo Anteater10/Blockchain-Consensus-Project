@@ -1,30 +1,21 @@
 # src/paxos/messages.py
 #
-# This file defines the Paxos message types and a helper class
-# for converting messages to/from dictionaries for JSON.
-#
-# Follows the Paxos structure from the slides:
-#   - Message types: prepare, promise, accept, accepted, decide
-#   - Ballot numbers are totally ordered pairs/triples:
-#       (seq_num, proposer_id, depth)
-#     so they can be compared globally and per-log-slot.
-
+# Defines the Paxos message types and the PaxosMessage class used to
+# convert Paxos messages to and from dictionaries for JSON transport.
+# Follows the standard Paxos structure:
+#   - PREPARE, PROMISE, ACCEPT, ACCEPTED, DECIDE
+# Uses ballot numbers as (seq_num, proposer_id, depth) so proposals are totally ordered and tied to a specific log slot. 
+# Messages may carry prior accepted ballots/values, proposed block values, and
 from enum import Enum
-
-# Ballot = (seq_num, proposer_id, depth)
-# This encodes the “unique proposal number” idea:
-#   seq_num    → per-node increasing counter
-#   proposer_id→ node id (tie-breaker)
-#   depth      → log index / slot this ballot is for
 Ballot = tuple[int, int, int]
 
 
 class PaxosMessageType(str, Enum):
-    PREPARE = "PREPARE"    # Phase 1a
-    PROMISE = "PROMISE"    # Phase 1b (promise + prior AcceptNum/AcceptVal)
-    ACCEPT = "ACCEPT"      # Phase 2a
+    PREPARE = "PREPARE" # Phase 1a
+    PROMISE = "PROMISE" # Phase 1b (promise + prior AcceptNum/AcceptVal)
+    ACCEPT = "ACCEPT" # Phase 2a
     ACCEPTED = "ACCEPTED"  # Phase 2b
-    DECIDE = "DECIDE"      # Phase 3 (announce decision)
+    DECIDE = "DECIDE" # Phase 3 (announce decision)
 
 
 class PaxosMessage:
@@ -39,17 +30,6 @@ class PaxosMessage:
         accept_val=None,
         first_uncommitted: int | None = None,
     ):
-        """
-        msg_type          → one of the PaxosMessageType values
-        from_id           → sender node id (proposer/acceptor)
-        ballot            → (seq_num, proposer_id, depth) unique proposal number
-        depth             → log index / block depth this message is about
-        value             → proposed value (used in ACCEPT / ACCEPTED / DECIDE)
-        accept_num        → last accepted ballot (AcceptNum) reported in PROMISE
-        accept_val        → last accepted value (AcceptVal) reported in PROMISE
-        first_uncommitted → hint: sender's first_uncommitted_index
-                            (used for crash/partition recovery)
-        """
         self.type = msg_type
         self.from_id = from_id
         self.ballot = ballot
@@ -60,14 +40,6 @@ class PaxosMessage:
         self.first_uncommitted = first_uncommitted
 
     def to_dict(self) -> dict:
-        """
-        Convert the message to a plain dict so it can be JSON-encoded
-        on the network layer.
-
-        We only include optional fields when they are present, similar
-        to how different Paxos message types only carry the fields
-        they need (e.g., PROMISE vs ACCEPT).
-        """
         d = {
             "type": self.type.value,
             "from_id": self.from_id,
@@ -92,15 +64,8 @@ class PaxosMessage:
 
     @staticmethod
     def from_dict(d: dict) -> "PaxosMessage":
-        """
-        Build a PaxosMessage from a dict (after JSON decoding).
-
-        This inverts to_dict() and reconstructs the Ballot and
-        optional AcceptNum/AcceptVal fields exactly as the
-        Paxos pseudocode uses them.
-        """
         msg_type = PaxosMessageType(d["type"])
-        ballot = tuple(d["ballot"])  # [seq, proposer, depth] → (seq, proposer, depth)
+        ballot = tuple(d["ballot"])
 
         accept_num = None
         if "accept_num" in d and d["accept_num"] is not None:

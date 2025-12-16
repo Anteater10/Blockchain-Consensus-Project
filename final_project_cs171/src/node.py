@@ -1,20 +1,4 @@
 # src/node.py
-# This file starts a single node in the system. It loads config,
-# sets up local blockchain + accounts, and (for Milestone 2) runs
-# a networked Paxos dummy test.
-#
-# Milestone 1:
-#   - local blockchain + accounts
-#   - Paxos state + instance skeleton
-#   - stubbed network hooks for Paxos (no real networking yet)
-#
-# Milestone 2:
-#   - Person A: load/save blockchain + balances
-#   - Person B: networking skeleton + dummy Paxos over the network
-#
-# Later milestones:
-#   - Paxos driving real blocks for moneyTransfer commands
-#   - crash / restart using data on disk
 
 import argparse
 import json
@@ -52,16 +36,16 @@ class NodeConfig:
 
 class Node:
     def __init__(self, config, peers):
-        self.config = config       # NodeConfig for this node
-        self.peers = peers         # list of NodeConfig for other nodes
+        self.config = config # NodeConfig for this node
+        self.peers = peers # list of NodeConfig for other nodes
 
-        # make sure data directory exists
+        #pathing stuff for our directories
         self.config.data_dir.mkdir(parents=True, exist_ok=True)
 
         # paths for persistence
         self.blockchain_path = self.config.data_dir / "blockchain.json"
         self.balances_path = self.config.data_dir / "balances.json"
-        # log for tentative vs decided blocks (Option 2)
+        # log for tentative vs decided blocks
         self.log_path = self.config.data_dir / "ledger_log.json"
 
         # load existing state if present, otherwise start fresh
@@ -73,42 +57,22 @@ class Node:
         # depth -> PaxosInstance
         self.paxos_instances: dict[int, PaxosInstance] = {}
 
-        # Perform crash recovery using ledger_log.json (extra credit)
+        # Perform crash recovery using ledger_log.json
         self._recover_from_ledger()
 
         # Networking: server + outgoing client
         self.server: asyncio.AbstractServer | None = None
         self.net_client: NetworkClient | None = None
 
-    # -------------------------------------------------------------------------
-    # Helpers for first_uncommitted_index (cluster recovery)
-    # -------------------------------------------------------------------------
-
+    # Helpers for first_uncommitted_index
     def _compute_first_uncommitted_index(self) -> int:
-        """
-        Return this node's first_uncommitted_index.
-
-        We treat the committed/applied prefix as exactly the current
-        blockchain length. Anything >= this index is "uncommitted".
-        """
         return self.blockchain.length()
 
     def _repair_peer_chain(self, peer_id: int, peer_index: int, local_index: int) -> None:
-        """
-        Repair logic invoked by PaxosInstance based on first_uncommitted_index.
-
-        - If peer_index < local_index: peer is behind; send REPAIR_BLOCKS
-          for depths [peer_index, local_index).
-
-        - If local_index < peer_index: this node is behind; send a
-          REPAIR_REQUEST asking the peer to send blocks [local_index, peer_index).
-
-        This is a synchronous callback; it schedules async network work
-        via asyncio.create_task.
-        """
         if self.net_client is None:
             print(
-                f"[NODE {self.config.id}] _repair_peer_chain: net_client not ready",
+                f"[NODE {self.config.id}] _repair_peer_chain: net_client not ready; "
+                "cannot send repair messages.",
                 flush=True,
             )
             return
@@ -120,7 +84,7 @@ class Node:
         peer_index = int(peer_index)
         local_index = int(local_index)
 
-        # Case 1: peer behind → push blocks
+        # Case 1: peer behind -> push blocks
         if peer_index < local_index:
             start_depth = max(peer_index, 0)
             end_depth = local_index
@@ -144,8 +108,8 @@ class Node:
             }
 
             print(
-                f"[NODE {self.config.id}] Sending REPAIR_BLOCKS to node {peer_id} "
-                f"for depths [{start_depth}, {end_depth})",
+                f"[NODE {self.config.id}] Repair: peer {peer_id} is behind.\n"
+                f"  Sending blocks for depths [{start_depth}, {end_depth}).",
                 flush=True,
             )
 
@@ -155,7 +119,7 @@ class Node:
             asyncio.create_task(_send())
             return
 
-        # Case 2: we are behind → request repair
+        # Case 2: we are behind -> request repair
         if local_index < peer_index:
             start_depth = max(local_index, 0)
             end_depth = peer_index
@@ -169,8 +133,8 @@ class Node:
             }
 
             print(
-                f"[NODE {self.config.id}] Sending REPAIR_REQUEST to node {peer_id} "
-                f"for depths [{start_depth}, {end_depth})",
+                f"[NODE {self.config.id}] Repair: we are behind peer {peer_id}.\n"
+                f"  Requesting blocks for depths [{start_depth}, {end_depth}).",
                 flush=True,
             )
 
@@ -180,35 +144,19 @@ class Node:
             asyncio.create_task(_send_req())
             return
 
-        # Equal indexes → nothing to do.
+        # Equal indexes -> nothing to do.
 
-    # -------------------------------------------------------------------------
-    # Helper: build peer map for NetworkClient
-    # -------------------------------------------------------------------------
-
+    # build peer map for NetworkClient
     def _build_peer_map(self) -> dict[int, tuple[str, int]]:
-        """
-        Build a mapping { node_id -> (host, port) } including self and peers.
-
-        Used by NetworkClient so it knows how to connect to everyone.
-        """
         peers: dict[int, tuple[str, int]] = {}
         peers[self.config.id] = (self.config.host, self.config.port)
         for p in self.peers:
             peers[p.id] = (p.host, p.port)
         return peers
 
-    # -------------------------------------------------------------------------
-    # Paxos integration (now with real networking hooks)
-    # -------------------------------------------------------------------------
 
+    # Paxos integration
     def _get_paxos_instance(self, depth):
-        """
-        Return the PaxosInstance for a given depth, creating it if needed.
-
-        send_func / broadcast_func now call into the NetworkClient so that
-        Paxos messages are actually sent over TCP.
-        """
         if depth not in self.paxos_instances:
             peer_ids = [p.id for p in self.peers]
             inst = PaxosInstance(
@@ -226,30 +174,11 @@ class Node:
         return self.paxos_instances[depth]
 
     def start_paxos(self, depth, value):
-        """
-        Entry point for proposing a value at a given depth.
-
-        For Milestone 3, 'value' is typically a Block (or Block dict)
-        representing a transaction to be appended at this depth.
-        """
         inst = self._get_paxos_instance(depth)
         inst.start_proposal(value)
 
-    # -------------------------------------------------------------------------
     # Paxos callbacks: tentative + decided
-    # -------------------------------------------------------------------------
-
     def _on_paxos_tentative(self, depth, value):
-        """
-        Called when *this* node accepts a value for a given depth
-        (before DECIDE).
-
-        We:
-          - reconstruct the Block
-          - write/update a tentative entry in ledger_log.json
-
-        This implements the "tentative on disk" part of the spec (Option 2).
-        """
         # Rebuild Block from value
         if isinstance(value, dict):
             try:
@@ -272,8 +201,10 @@ class Node:
         # Write / update tentative entry in the log
         try:
             log_write_tentative(depth, block.to_dict(), self.log_path)
+            sender, receiver, amount = block.tx
             print(
-                f"[NODE {self.config.id}] Logged tentative block at depth={depth}",
+                f"[NODE {self.config.id}] Tentative accept at depth={depth} recorded in ledger_log.\n"
+                f"  Tx : {sender} -> {receiver}, amount={amount}",
                 flush=True,
             )
         except Exception as e:
@@ -283,23 +214,12 @@ class Node:
             )
 
     def _on_paxos_decide(self, depth, value):
-        """
-        Callback invoked by PaxosInstance when a DECIDE is delivered.
-
-        For Milestone 3, 'value' is the decided Block (usually serialized
-        as a dict over the network). Here we:
-          - reconstruct the Block
-          - append it to the local chain
-          - apply the transaction to accounts
-          - mark the log entry as decided
-          - persist blockchain + balances to disk
-        """
         print(
-            f"[NODE {self.config.id}] DECIDED depth={depth}, value={value!r}",
+            f"[NODE {self.config.id}] Paxos DECIDED value for depth={depth}.",
             flush=True,
         )
 
-        # 1) Rebuild Block from value
+        # Rebuild Block from value
         if isinstance(value, dict):
             try:
                 block = Block.from_dict(value)
@@ -318,35 +238,36 @@ class Node:
             )
             return
 
-        # Optional sanity check: depth agreement
+        # sanity check: depth agreement
         if block.depth != depth:
             print(
-                f"[NODE {self.config.id}] WARNING: decided depth mismatch: "
-                f"block.depth={block.depth}, slot={depth}",
+                f"[NODE {self.config.id}] WARNING: decided depth mismatch.\n"
+                f"  Block.depth = {block.depth}\n"
+                f"  Slot (msg)  = {depth}",
                 flush=True,
             )
 
-        # 2) Append block to blockchain (this enforces depth/prev_hash checks)
+        # Append block to blockchain (this enforces depth/prev_hash checks)
         try:
             self.blockchain.append_block(block)
         except ValueError as e:
-            # This can happen if we've already appended this block or chain diverged.
+            # happens if already appended this block or chain diverged.
             print(
                 f"[NODE {self.config.id}] ERROR appending decided block at depth={depth}: {e}",
                 flush=True,
             )
             return
 
-        # 3) Apply the transaction to account balances
+        # Apply the transaction to account balances
         sender, receiver, amount = block.tx
-        # At this point, we assume tx was valid when it was proposed.
+        # we assume tx was valid when it was proposed.
         self.accounts.apply_transaction(block.tx)
 
-        # 4) Mark decided in the log (Option 2: tentative -> decided)
+        # Mark decided in the log (Option 2: tentative to decided)
         try:
             log_mark_decided(depth, self.log_path)
             print(
-                f"[NODE {self.config.id}] Marked block at depth={depth} as DECIDED in log",
+                f"[NODE {self.config.id}] Marked depth={depth} as DECIDED in ledger_log.",
                 flush=True,
             )
         except Exception as e:
@@ -355,28 +276,22 @@ class Node:
                 flush=True,
             )
 
-        # 5) Persist new state to disk
+        # Persist new state to disk
         save_blockchain(self.blockchain, self.blockchain_path)
         save_balances(self.accounts, self.balances_path)
 
         print(
-            f"[NODE {self.config.id}] Applied decided block at depth={block.depth}: "
-            f"{sender} -> {receiver}, amount={amount}",
+            f"[NODE {self.config.id}] >>> Applied DECIDED block at depth={block.depth}.\n"
+            f"  Tx           : {sender} -> {receiver}, amount={amount}\n"
+            f"  Block hash   : {block.hash}\n"
+            f"  Chain length : {self.blockchain.length()}",
             flush=True,
         )
 
-    # -------------------------------------------------------------------------
+
+
     # Network send helpers for Paxos
-    # -------------------------------------------------------------------------
-
     def _send_paxos_to_peer(self, peer_id, msg: PaxosMessage):
-        """
-        Send a PaxosMessage to a single peer over the network.
-
-        This is the send_func passed into PaxosInstance. It wraps the
-        async NetworkClient.send_to_peer in an asyncio task so that
-        PaxosInstance can remain synchronous.
-        """
         if not isinstance(msg, PaxosMessage):
             print(
                 f"[NODE {self.config.id}] _send_paxos_to_peer got non-PaxosMessage: {msg}",
@@ -397,11 +312,6 @@ class Node:
         asyncio.create_task(_run())
 
     def _broadcast_paxos(self, msg: PaxosMessage):
-        """
-        Broadcast a PaxosMessage to all peers over the network.
-
-        This is the broadcast_func passed into PaxosInstance.
-        """
         if not isinstance(msg, PaxosMessage):
             print(
                 f"[NODE {self.config.id}] _broadcast_paxos got non-PaxosMessage: {msg}",
@@ -421,16 +331,9 @@ class Node:
 
         asyncio.create_task(_run())
 
-    # -------------------------------------------------------------------------
     # Cluster repair message handling
-    # -------------------------------------------------------------------------
-
     async def _handle_repair_message(self, d: dict):
         """
-        Handle incoming repair messages (not Paxos messages).
-
-        Two types:
-
           REPAIR_BLOCKS:
             {
               "repair_type": "REPAIR_BLOCKS",
@@ -440,7 +343,6 @@ class Node:
               "end_depth": <int>,
               "blocks": [block_dicts...]
             }
-
           REPAIR_REQUEST:
             {
               "repair_type": "REPAIR_REQUEST",
@@ -453,7 +355,7 @@ class Node:
         rtype = d.get("repair_type")
         if rtype not in ("REPAIR_BLOCKS", "REPAIR_REQUEST"):
             print(
-                f"[NODE {self.config.id}] Unknown repair_type={rtype}",
+                f"[NODE {self.config.id}] Unknown repair_type={rtype}; ignoring.",
                 flush=True,
             )
             return
@@ -490,8 +392,8 @@ class Node:
             }
 
             print(
-                f"[NODE {self.config.id}] Responding to REPAIR_REQUEST from node {sender_id} "
-                f"with REPAIR_BLOCKS for depths [{start_depth}, {end_depth})",
+                f"[NODE {self.config.id}] Responding to REPAIR_REQUEST from node {sender_id}.\n"
+                f"  Depths included: [{start_depth}, {end_depth}).",
                 flush=True,
             )
 
@@ -504,8 +406,8 @@ class Node:
             return
 
         print(
-            f"[NODE {self.config.id}] Received REPAIR_BLOCKS with {len(blocks)} blocks "
-            f"from node {d.get('from_id')}",
+            f"[NODE {self.config.id}] Received REPAIR_BLOCKS with {len(blocks)} block(s) "
+            f"from node {d.get('from_id')}.",
             flush=True,
         )
 
@@ -533,7 +435,7 @@ class Node:
                 if existing.hash != block.hash:
                     print(
                         f"[NODE {self.config.id}] WARNING: repair block at depth={depth} "
-                        f"hash mismatch; keeping existing",
+                        "hash mismatch; keeping existing local block.",
                         flush=True,
                     )
                 continue
@@ -542,7 +444,7 @@ class Node:
             if depth != self.blockchain.length():
                 print(
                     f"[NODE {self.config.id}] WARNING: repair block depth={depth} "
-                    f"!= current chain length={self.blockchain.length()} – skipping",
+                    f"!= current chain length={self.blockchain.length()} – skipping.",
                     flush=True,
                 )
                 continue
@@ -568,8 +470,8 @@ class Node:
                 continue
 
             print(
-                f"[NODE {self.config.id}] Applied repaired block at depth={depth}: "
-                f"{sender} -> {receiver}, amount={amount}",
+                f"[NODE {self.config.id}] Applied repaired block at depth={depth}.\n"
+                f"  Tx : {sender} -> {receiver}, amount={amount}",
                 flush=True,
             )
 
@@ -577,13 +479,8 @@ class Node:
         save_blockchain(self.blockchain, self.blockchain_path)
         save_balances(self.accounts, self.balances_path)
 
+
     async def handle_incoming_paxos_dict(self, d):
-        """
-        Network server hook: given an incoming JSON dict,
-        either:
-          - treat it as a repair message (repair_type present), or
-          - decode into a PaxosMessage and route it to the correct PaxosInstance.
-        """
         # Handle repair messages first (non-Paxos)
         if "repair_type" in d:
             await self._handle_repair_message(d)
@@ -594,24 +491,14 @@ class Node:
         inst = self._get_paxos_instance(msg.depth)
         inst.handle_message(msg)
 
-    # -------------------------------------------------------------------------
-    # Application-level entrypoint: money transfer → Paxos proposal
-    # -------------------------------------------------------------------------
 
+    # Application-level entrypoint: money transfer -> Paxos proposal
     def handle_money_transfer(self, debit_id: str, credit_id: str, amount: int):
-        """
-        Handle a user-initiated money transfer.
-
-        - debit_id, credit_id are account ids like "P1", "P2"
-        - amount is an integer
-
-        This builds a candidate Block and starts Paxos at the next depth.
-        """
         # 1) Check that the debit account can pay
         if not self.accounts.can_debit(debit_id, amount):
             print(
-                f"[NODE {self.config.id}] Insufficient funds in {debit_id} "
-                f"for amount={amount}",
+                f"[NODE {self.config.id}] Cannot propose transfer: "
+                f"{debit_id} -> {credit_id}, amount={amount} (insufficient funds here).",
                 flush=True,
             )
             return
@@ -619,21 +506,22 @@ class Node:
         tx = (debit_id, credit_id, amount)
         depth = self.blockchain.length()
 
-        # 2) Build candidate block using local blockchain logic (includes PoW)
+        # Build candidate block using local blockchain logic (includes PoW)
         block = self.blockchain.new_block_for_tx(tx)
 
+        sender, receiver, amt = block.tx
         print(
-            f"[NODE {self.config.id}] Proposing tx={tx} at depth={depth}",
+            f"[NODE {self.config.id}] Proposing new block via Paxos.\n"
+            f"  Depth (slot) : {depth}\n"
+            f"  Tx           : {sender} -> {receiver}, amount={amt}\n"
+            f"  Prev hash    : {block.prev_hash}\n"
+            f"  PoW nonce    : {block.nonce}\n"
+            f"  PoW hash     : {block.hash}",
             flush=True,
         )
 
-        # 3) For Paxos, send a JSON-friendly representation
-        #    so PaxosMessage.to_dict() / from_dict() can serialize it.
+        # For Paxos, send a JSON-friendly representation
         self.start_paxos(depth=depth, value=block.to_dict())
-
-    # -------------------------------------------------------------------------
-    # Printing + local test (Person A: state + storage)
-    # -------------------------------------------------------------------------
 
     def print_summary(self):
         print("=== Node Startup Summary ===")
@@ -642,45 +530,38 @@ class Node:
         print(f"  Port        : {self.config.port}")
         print(f"  Data dir    : {self.config.data_dir}")
         print(f"  Peers       : {[p.id for p in self.peers]}")
-        print("============================")
+        print("  Role        : participates in Paxos for every depth")
+        print("============================\n")
 
+
+
+    # Printing + local test
     def print_blockchain(self):
-        """
-        Print all blocks in the blockchain in a readable way.
-        """
-        print("\n=== Blockchain ===")
+        print("\n=== Blockchain (decided blocks only) ===")
         if len(self.blockchain.blocks) == 0:
-            print("(empty)")
+            print("(no decided blocks yet)\n")
             return
 
         for b in self.blockchain.blocks:
             sender, receiver, amount = b.tx
-            print(f"- depth   : {b.depth}")
-            print(f"  tx      : {sender} -> {receiver}, amount={amount}")
-            print(f"  nonce   : {b.nonce}")
-            print(f"  hash    : {b.hash}")
-            print(f"  prev    : {b.prev_hash}")
+            print(f"- Depth        : {b.depth}")
+            print(f"  Tx           : {sender} -> {receiver}, amount={amount}")
+            print(f"  Nonce        : {b.nonce}")
+            print(f"  Block hash   : {b.hash}")
+            print(f"  Prev hash    : {b.prev_hash}")
             print("")
 
+        print(f"Total decided blocks: {self.blockchain.length()}\n")
+
+
     def print_balances(self):
-        """
-        Print account balances.
-        """
-        print("\n=== Balances ===")
-        for cid, bal in self.accounts.balances.items():
+        print("\n=== Account Balances at this Node ===")
+        for cid, bal in sorted(self.accounts.balances.items()):
             print(f"  {cid}: {bal}")
+        print("")
+
 
     def run_local_test(self):
-        """
-        Simple Milestone 1+2 test:
-        - create a tx (P1 -> P2, 10)
-        - build + append a block
-        - apply tx to accounts
-        - save to disk
-        - print results
-
-        This is local-only and does not involve Paxos/networking.
-        """
         print("\n[Local Test] Creating a block locally...\n")
 
         tx = ("P1", "P2", 10)
@@ -712,62 +593,47 @@ class Node:
         for cid, bal in self.accounts.balances.items():
             print(f"  {cid}: {bal}")
 
-    # -------------------------------------------------------------------------
-    # Milestone 2: async networking entrypoint (Person B)
-    # -------------------------------------------------------------------------
-
+    # Milestone 2: async networking entrypoint
     async def run_network(self):
-        """
-        Network runner:
-
-        - Start the asyncio server to receive Paxos messages
-        - Connect to peers using NetworkClient
-        - Start CLI loop (reads commands from stdin)
-        - Then keep the event loop alive
-        """
-        # 1) Start server for incoming Paxos messages
+        # Start server for incoming Paxos messages
         self.server = await start_server(
             self.config.host,
             self.config.port,
             self.handle_incoming_paxos_dict,
         )
 
-        # 2) Set up NetworkClient and connect to peers
+        # set up NetworkClient and connect to peers
         peer_map = self._build_peer_map()
         self.net_client = NetworkClient(self.config.id, peer_map)
         await self.net_client.connect_peers()
 
         print(f"[NODE {self.config.id}] Network initialized", flush=True)
 
-        # 3) Start CLI loop in background
+        # Start CLI loop in background
         asyncio.create_task(run_cli(self))
 
-        # 4) Keep running forever
+        # Keep running forever
         await asyncio.Event().wait()
 
-    # -------------------------------------------------------------------------
     # Crash recovery using ledger_log.json (extra credit)
-    # -------------------------------------------------------------------------
-
     def _recover_from_ledger(self):
-        """
-        Extra-credit recovery:
-
-        1) Load ledger_log.json.
-        2) For any entry marked decided=True that is not yet in the blockchain,
-           append the block and apply its transaction.
-        3) For all entries (decided or tentative), seed Paxos acceptor state
-           so this node remembers its AcceptVal at each depth.
-        """
         entries = load_ledger_log(self.log_path)
         if not entries:
-            print(f"[NODE {self.config.id}] No ledger_log.json or empty; nothing to recover")
+            print(
+                f"[NODE {self.config.id}] Startup: no ledger_log.json entries; "
+                "nothing to recover.",
+                flush=True,
+            )
             return
 
-        print(f"[NODE {self.config.id}] Recovering from ledger_log.json with {len(entries)} entries")
+        print(
+            f"[NODE {self.config.id}] Startup: recovering from ledger_log.json "
+            f"with {len(entries)} slot(s) recorded.",
+            flush=True,
+        )
 
-        # 1) Repair blockchain/balances from decided entries
-        #    We only add blocks that are missing from the chain.
+        # Repair blockchain/balances from decided entries
+        # only add blocks that are missing from the chain.
         for depth in sorted(entries.keys()):
             entry = entries[depth]
             decided = entry.get("decided", False)
@@ -778,22 +644,22 @@ class Node:
 
             block = Block.from_dict(block_dict)
 
-            # If this depth is already in the blockchain, sanity-check and skip
+            # If this depth is already in the blockchain, check and skip
             if block.depth < len(self.blockchain.blocks):
                 existing = self.blockchain.blocks[block.depth]
                 if existing.hash != block.hash:
                     print(
                         f"[NODE {self.config.id}] WARNING: ledger decided block at depth={block.depth} "
-                        f"hash mismatch with blockchain",
+                        "hash mismatch with blockchain. Keeping blockchain version.",
                         flush=True,
                     )
                 continue
 
-            # We expect either depth == current length (append), or things are weird.
+            # expect depth == current length
             if block.depth != self.blockchain.length():
                 print(
                     f"[NODE {self.config.id}] WARNING: decided block depth={block.depth} "
-                    f"does not match current chain length={self.blockchain.length()} – skipping",
+                    f"does not match current chain length={self.blockchain.length()} – skipping.",
                     flush=True,
                 )
                 continue
@@ -816,13 +682,13 @@ class Node:
                     f"[NODE {self.config.id}] ERROR applying recovered tx at depth={depth}: {e}",
                     flush=True,
                 )
-                # If balances.json is corrupted vs chain, this might trip.
+                # If balances.json is corrupted vs chain, this might go crazy
                 # Keep going for now.
                 continue
 
             print(
-                f"[NODE {self.config.id}] Recovered decided block at depth={depth}: "
-                f"{sender} -> {receiver}, amount={amount}",
+                f"[NODE {self.config.id}] Replayed decided block from ledger at depth={depth}.\n"
+                f"  Tx : {sender} -> {receiver}, amount={amount}",
                 flush=True,
             )
 
@@ -830,8 +696,8 @@ class Node:
         save_blockchain(self.blockchain, self.blockchain_path)
         save_balances(self.accounts, self.balances_path)
 
-        # 2) Seed Paxos acceptor state from BOTH tentative and decided entries.
-        #    This makes the node remember AcceptVal for this depth.
+        # Seed Paxos acceptor state from BOTH tentative and decided entries.
+        # This makes the node remember AcceptVal for this depth.
         for depth in sorted(entries.keys()):
             entry = entries[depth]
             block_dict = entry["block"]
@@ -852,15 +718,14 @@ class Node:
             acc.accept_num = synthetic_ballot
             acc.accept_val = block_dict
 
-        print(f"[NODE {self.config.id}] Recovery seeding of Paxos acceptor state completed")
+        print(
+            f"[NODE {self.config.id}] Recovery complete: Paxos acceptor state seeded "
+            "from ledger_log entries.",
+            flush=True,
+        )
 
 
 def load_config(config_path, my_id):
-    """
-    Read config/nodes.json and return:
-      - the NodeConfig for this node (my_id)
-      - a list of NodeConfig for all peers
-    """
     try:
         text = config_path.read_text(encoding="utf-8")
         raw = json.loads(text)
@@ -916,10 +781,6 @@ def main():
     # For Milestone 2+, we run the async networking skeleton instead of
     # the local-only blockchain test.
     asyncio.run(node.run_network())
-
-    # If you still want to sanity-check storage locally, you can
-    # temporarily call:
-    #   node.run_local_test()
 
 
 if __name__ == "__main__":
