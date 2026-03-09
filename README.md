@@ -81,6 +81,3 @@ This repository is shared as a portfolio project to highlight distributed system
 
 A production-clean version of this repo should also remove tracked environment artifacts such as `venv/` and `__pycache__/` and include a proper `.gitignore`.
 
-## License
-
-Add a license here if appropriate.
